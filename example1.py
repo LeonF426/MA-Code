@@ -11,7 +11,7 @@ if SRC not in sys.path:
 import torch
 
 from ssam.models import MixedLinearNet
-from ssam.data import sample_gaussian_linear
+from ssam.data import sample_gaussian_linear, load_fixed_dataset,create_fixed_dataset, make_batch_sampler_from_fixed_dataset
 from ssam.trainers import sgd_with_weight_noise, gradient_descent_train
 from ssam.optim_schedules import constant_lr, inverse_time_eta, step_decay_lr
 from ssam.plotting import plot_training_history
@@ -19,20 +19,28 @@ from ssam.losses import compute_initial_LR, exact_L_R_for_diagonal_model
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    d = 4
+    d = 10
 
     layer_specs = [
         {"type": "diag",  "in_dim": d, "out_dim": d},
         {"type": "diag", "in_dim": d, "out_dim": d},
+        {"type": "diag", "in_dim": d, "out_dim": d},
+        {"type": "diag", "in_dim": d, "out_dim": d},
         {"type": "diag", "in_dim": d, "out_dim": d}
     ]
-    L=3
+    L= len(layer_specs)
+    dataset_path = "./src/ssam/data/"
+
+
     model = MixedLinearNet(layer_specs)
 
     w_star = torch.randn(d, device=device)
+    # Here we decide if we do 
+    # def data_sampler(batch_size: int):
+    #     return sample_gaussian_linear(batch_size, d, device=device, w_star=w_star, noise_std=0.12)
+    X,Y,_ = load_fixed_dataset(dataset_path + f"train_dataset_d{d}.pt",device=device)
 
-    def data_sampler(batch_size: int):
-        return sample_gaussian_linear(batch_size, d, device=device, w_star=w_star, noise_std=0.12)
+    data_sampler = make_batch_sampler_from_fixed_dataset(X,Y)
 
     eta_sched = inverse_time_eta(eta0=0.5, alpha=1/2)
     
