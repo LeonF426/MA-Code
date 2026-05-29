@@ -13,6 +13,18 @@ def step_decay_lr(lr0: float, delta: float, eta_sched: Callable[[int], float]) -
     return schedule
 
 
+def lr_convergence(lr0: float, delta: float, eta_sched: Callable[[int], float]) -> Callable[[int], float]:
+    def schedule(k: int) -> float:
+        return (1-delta)/lr0 * eta_sched(k)**2 
+    return schedule
+
+
+def lr_balancing(lr0: float, delta: float, eta_sched: Callable[[int], float]) -> Callable[[int], float]:
+    def schedule(k: int) -> float:
+        return (1-delta)/lr0 * eta_sched(k)**2 
+    return schedule
+
+
 def bound_lr(lr: float, delta: float, eta_sched: Callable[[int], float]) -> Callable[[int], float]:
     def schedule(k: int) -> float:
         return (1-delta)/lr * eta_sched(k)**2 
