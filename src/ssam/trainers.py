@@ -2,36 +2,92 @@
 import torch
 from typing import Callable, Dict
 from .losses import regularized_loss
+import torch.nn as nn
+from typing import List
+from .layers import DiagLinear  # adjust import to your package layout
+
+def get_layer_matrices(model: nn.Module) -> List[torch.Tensor]:
+    """
+    Return a list [W1, ..., WL] of weight matrices for the model.
+    For DiagLinear layers, returns the full diagonal matrix.
+    """
+    Ws = []
+    for layer in model.layers:  # assumes MixedLinearNet with .layers
+        if isinstance(layer, DiagLinear):
+            W = torch.diag(layer.weight)  # (d,d)
+        elif isinstance(layer, nn.Linear):
+            W = layer.weight              # (out_dim, in_dim)
+        else:
+            continue
+        Ws.append(W)
+    return Ws
+
+def max_balancing_norm(model: nn.Module) -> float:
+    """
+    Compute max_l || W_{l+1}^2 - W_l^2 ||_F for the *current* model weights.
+    Interprets W^2 as matrix product W @ W (for square layers).
+    """
+    Ws = get_layer_matrices(model)
+    if len(Ws) < 2:
+        return 0.0
+
+    norms = []
+    for l in range(len(Ws) - 1):
+        Wl = Ws[l]
+        Wlp1 = Ws[l + 1]
+
+        # interpret W^2 as W @ W (assumes square)
+        Wl2 = Wl @ Wl
+        Wlp12 = Wlp1 @ Wlp1
+
+        diff = Wlp12 - Wl2
+        norms.append(torch.norm(diff, p="fro"))
+
+    max_norm = torch.stack(norms).max()
+    return float(max_norm.item())
+
 
 def gradient_descent_train(
     model,
     data_sampler: Callable[[int], tuple],
     n_steps: int,
-    lr_schedule: Callable[[int], float],
+    lr_schedule: Callable[[int,float], float],
     eta_schedule: Callable[[int], float],
     batch_size: int,
     device: torch.device,
 ) -> Dict:
     model.to(device)
-    history = {"step": [], "lr": [], "eta": [], "loss": []}
+    history = {"step": [], "lr": [], "eta": [], "loss": [], "balancedness": []}
+    
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=1)
 
     for k in range(n_steps):
-        lr = lr_schedule(k)
-        eta = eta_schedule(k)
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-
+        
         X, Y = data_sampler(batch_size)
         X, Y = X.to(device), Y.to(device)
 
-        optimizer.zero_grad()
+
+        eta = eta_schedule(k)
         loss = regularized_loss(model, X, Y, eta)
+        loss_scalar = loss.item()
+        lr = lr_schedule(k,loss_scalar)
+
+        for pg in optimizer.param_groups:
+            pg["lr"] = lr
+
+
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
+        balancing_val = max_balancing_norm(model)
+
         history["step"].append(k)
-        history["lr"].append(lr)
-        history["eta"].append(eta)
-        history["loss"].append(loss.item())
+        history["lr"].append(float(lr))
+        history["eta"].append(float(eta))
+        history["loss"].append(loss_scalar)
+        history["balancedness"].append(balancing_val)
 
     return history
 

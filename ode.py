@@ -165,16 +165,17 @@ def plot_contour_with_ode_trajectory(
 
 def main():
     # initial condition
+    eta0 = 2
     theta0 = np.array([1.0, -2.0], dtype=float)
-    t0 = 5
+    t0 = 0
     # time-varying eta function (you can change this)
     def eta_func(t):
         alpha = 1/2
         if t <= t0:
-            return 3
+            return eta0
         else:
         # example: inverse time decay
-            return 3.0 / (1.0 + t-t0)**(alpha)
+            return eta0 / (1.0 + t-t0)**(alpha)
     
     # time span for the ODE
     t_start = 0.0
