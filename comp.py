@@ -20,7 +20,8 @@ except ImportError:
     def inverse_time_eta(eta0, alpha):
         return lambda k: eta0 / (1.0 + k) ** alpha
 
-
+def constant_eta(eta0):
+    return lambda k: eta0
 # ---------------------------------------------------------------------
 # 1. Loss and gradient
 # ---------------------------------------------------------------------
@@ -113,7 +114,7 @@ def run_descent_with_schedulers(
             raise ValueError(f"Unknown method: {method}")
 
         ws_reg[k + 1] = w_reg - alpha_k * grad_reg
-        ws_unreg[k + 1] = w_unreg - 0.05 * grad_unreg
+        ws_unreg[k + 1] = w_unreg - alpha_k * grad_unreg
 
     etas[n_steps] = eta_schedule(n_steps)
 
@@ -172,7 +173,6 @@ def make_inverse_time_eta_func(eta0, alpha, t0=0.0):
         return eta0 / (1.0 + t - t0) ** alpha
 
     return eta_func
-
 
 # ---------------------------------------------------------------------
 # 4. Plotting function: contour + arbitrary dict of paths
@@ -374,7 +374,7 @@ def plot_contour_with_paths(
     ax.set_ylabel(r"$w_2$", fontsize=11)
 
     if title is None:
-        title = fr"$\eta = {eta:.3f}$"
+        title = ""
 
     ax.set_title(title, fontsize=12, pad=10)
 
@@ -416,12 +416,12 @@ def main():
     )/2
 
 
-    eta0 = 3
+    eta0 = 0.6
     alpha_eta = 1 / 2
 
     delta = 1 / 2
 
-    eta_schedule = inverse_time_eta(eta0=eta0, alpha=alpha_eta)
+    eta_schedule =  constant_eta(eta0)#inverse_time_eta(eta0=eta0, alpha=alpha_eta)
 
     print("initial regularized loss:", F_eta(w0, eta0))
     print("constant C:", C)
@@ -457,12 +457,13 @@ def main():
         alpha=alpha_eta,
         t0=t_start,
     )
+    eta_func_const = lambda t: eta0
 
     eta_func_unreg = lambda t: 0.0
 
     sol_reg_ode = solve_gradient_flow_ode(
         theta0=w0,
-        eta_func=eta_func_reg,
+        eta_func=eta_func_const,
         t_span=(t_start, t_end),
         t_eval=t_eval_dense,
         rtol=1e-9,
@@ -485,7 +486,7 @@ def main():
     # Combined snapshots
     # -----------------------------
 
-    out_dir = Path("./plots/combined")
+    out_dir = Path("./plots/example1")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     level_color = "#7CFF6B"  # soft green
@@ -565,7 +566,7 @@ def main():
             fr"step/time $= {k}$"
         )
 
-        filename = out_dir / f"combined_snapshot_step_{k:04d}.png"
+        filename = out_dir / f"conv_4_same_ascaled_step_{k:04d}.png"
 
         plot_contour_with_paths(
             eta=eta_k,
