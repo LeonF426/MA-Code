@@ -521,10 +521,8 @@ def main():
             fr"$\alpha_k = {alpha_k:.3g}$, "
             fr"step/time $= {k}$"
         )
-        title = None
 
         filename = out_dir / f"alpha_{alpha_eta:.2f}_eta0_{eta0}_baseline_{eta1}_{k:01d}.png"
-        # filename = out_dir / f"conv_4_same_step_{k:04d}.png"
 
         plot_contour_with_paths(
             eta=eta_k,
