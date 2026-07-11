@@ -35,7 +35,7 @@ def bound_lr(lr: float, delta: float, eta_sched: Callable[[int], float]) -> Call
         return (1-delta)/lr * eta_sched(k)**2 
     return schedule
 
-def inverse_time_eta(eta0: float, alpha:float) -> Callable[[int], float]:
+def inverse_time_eta(eta0: float, alpha:float,eta1: float=0.0) -> Callable[[int], float]:
     def schedule(k: int) -> float:
-        return eta0 / (1.0 + k)**(alpha)
+        return eta0 / (1.0 + k)**(alpha) + eta1
     return schedule

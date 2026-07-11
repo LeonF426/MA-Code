@@ -17,8 +17,8 @@ try:
     from ssam.optim_schedules import inverse_time_eta
 except ImportError:
     # Fallback if ssam is unavailable
-    def inverse_time_eta(eta0, alpha):
-        return lambda k: eta0 / (1.0 + k) ** alpha
+    def inverse_time_eta(eta0, alpha,eta1):
+        return lambda k: eta0 / (1.0 + k) ** alpha + eta1
 
 def constant_eta(eta0):
     return lambda k: eta0
@@ -60,7 +60,9 @@ def run_descent_with_schedulers(
     delta: float,
     C: float,
     eta_schedule,
-    method: str = "gd",
+    lab: float = 1.0,
+    L : int = 2,
+    method: str = "sdc",
 ):
     """
     Computes two GD paths:
@@ -101,20 +103,27 @@ def run_descent_with_schedulers(
         losses_reg.append(loss_reg)
         losses_unreg.append(loss_unreg)
 
-        # Your custom learning rate
+        # Strong Descent Condition Learning Rate
         alpha_k = 2.0 * (1.0 - delta) / C * eta_k ** 2 / loss_reg
+
+        # Balancing Condition learning rate
+        a_k_b_1 = eta_k **2 / (4*loss_reg)
+        a_k_b_2 = 3*lab*eta_k**(2*L-2)* a_k_b_1**2
+        a_k_b_3 = (lab*eta_k ** (2*L-2))**(-1)
+        
+        alpha_k_b = np.min([a_k_b_1,a_k_b_2, a_k_b_3])
+
+
+        if method == "balancing":
+            alpha_k = alpha_k_b
+
         lrs[k] = alpha_k
 
-        if method == "gd":
-            grad_reg = grad_F_eta(w_reg, eta_k)
-            grad_unreg = grad_F_eta(w_unreg, 0.0)
-        elif method == "sgd":
-            raise NotImplementedError("SGD noise is not implemented in this script.")
-        else:
-            raise ValueError(f"Unknown method: {method}")
+        grad_reg = grad_F_eta(w_reg, eta_k)
+        grad_unreg = grad_F_eta(w_unreg, 0.0)
 
         ws_reg[k + 1] = w_reg - alpha_k * grad_reg
-        ws_unreg[k + 1] = w_unreg - alpha_k * grad_unreg
+        ws_unreg[k + 1] = w_unreg - 0.025 * grad_unreg
 
     etas[n_steps] = eta_schedule(n_steps)
 
@@ -163,14 +172,12 @@ def solve_gradient_flow_ode(
     return sol
 
 
-def make_inverse_time_eta_func(eta0, alpha, t0=0.0):
+def make_inverse_time_eta_func(eta0,eta1, alpha):
     """
     Continuous version of eta_k = eta0 / (1 + k)^alpha.
     """
     def eta_func(t):
-        if t <= t0:
-            return eta0
-        return eta0 / (1.0 + t - t0) ** alpha
+        return eta0 / (1.0 + t) ** alpha + eta1
 
     return eta_func
 
@@ -183,11 +190,10 @@ def plot_contour_with_paths(
     paths,
     w_star,
     level_color,
-    balance_color,
-    xlim=(-3.0, 3.0),
-    ylim=(-3.0, 3.0),
+    xlim=(-2.0, 2.0),
+    ylim=(-2.0, 2.0),
     num_grid=500,
-    levels=100,
+    levels=50,
     cmap="RdPu_r",
     marker_every=25,
     title=None,
@@ -196,38 +202,6 @@ def plot_contour_with_paths(
     level_linewidth=1.2,
     path_styles=None,
 ):
-    """
-    Plot contour of F_eta and overlay multiple trajectories.
-
-    Parameters
-    ----------
-    eta:
-        Eta value used for the contour background.
-
-    paths:
-        Dictionary of {label: trajectory_array}, where each trajectory_array
-        has shape (N, 2).
-
-        Example:
-            paths = {
-                "regularized GD": ws_reg[:k+1],
-                "unregularized GD": ws_unreg[:k+1],
-                "regularized ODE": ode_reg_path,
-                "unregularized ODE": ode_unreg_path,
-            }
-
-    path_styles:
-        Optional dictionary of styles per label.
-
-        Example:
-            path_styles = {
-                "regularized GD": {"color": "navy", "marker": "o"},
-                "unregularized GD": {"color": "darkorange", "marker": "s"},
-            }
-
-    marker_every:
-        Either an int used for every path, or a dict {label: int}.
-    """
 
     if path_styles is None:
         path_styles = {}
@@ -254,7 +228,7 @@ def plot_contour_with_paths(
     fig, ax = plt.subplots(figsize=(6, 6))
 
     # Filled contours of F_eta
-    ax.contourf(W1, W2, Z, levels=levels, cmap=cmap)
+    ax.contourf(W1, W2, Z, levels=levels, cmap=cmap, alpha=0.8)
     if level_color != None:
         # Level set: w1 * w2 = w_star
         ax.contour(
@@ -278,28 +252,6 @@ def plot_contour_with_paths(
             linewidth=level_linewidth,
             label=level_label,
         )
-
-    if balance_color != None:
-        ax.contour(
-            W1,
-            W2,
-            W1**2 - W2**2,
-            levels=[0.0],
-            colors=balance_color,
-            linewidths=1.4,
-            linestyles="solid",
-        )
-
-        # dummy artist for legend
-        ax.plot(
-            [],
-            [],
-            color=balance_color,
-            linewidth=level_linewidth,
-            linestyle="solid",
-            label=r"$w_1^2 = w_2^2$",
-        )
-
     # Plot all paths
     for i, (label, path) in enumerate(paths.items()):
         path = np.asarray(path, dtype=float)
@@ -342,7 +294,7 @@ def plot_contour_with_paths(
             path[indices, 0],
             path[indices, 1],
             marker=marker,
-            markersize=3,
+            markersize=4,
             color=color,
             linestyle="",
             alpha=alpha,
@@ -352,10 +304,10 @@ def plot_contour_with_paths(
         ax.scatter(
             path[0, 0],
             path[0, 1],
-            color="lime",
-            s=45,
+            color="#7AB547",
+            s=30,
             zorder=6,
-            edgecolor="black",
+            edgecolor="#111111",
             linewidth=0.5,
         )
 
@@ -363,10 +315,10 @@ def plot_contour_with_paths(
         ax.scatter(
             path[-1, 0],
             path[-1, 1],
-            color="red",
-            s=45,
+            color=color,
+            s=30,
             zorder=6,
-            edgecolor="black",
+            edgecolor="#111111",
             linewidth=0.5,
         )
 
@@ -382,7 +334,7 @@ def plot_contour_with_paths(
     ax.set_ylim(*ylim)
     ax.set_aspect("equal")
 
-    ax.legend(frameon=True, fontsize=8, loc="best")
+    #ax.legend(frameon=True, fontsize=8, loc="best")
 
     fig.tight_layout()
 
@@ -403,8 +355,8 @@ def main():
     # Shared setup
     # -----------------------------
 
-    n_steps = 100
-    snapshot_every = 5
+    n_steps = 1000
+    snapshot_every = 1000
 
     w0 = np.array([1.0, -2.0], dtype=float)
 
@@ -413,19 +365,23 @@ def main():
 
     C = math.sqrt(L) * (
         2 + 2 * math.sqrt(L) * d + 5 * math.sqrt(L - 1)
-    )/2
+    )
 
 
-    eta0 = 0.6
-    alpha_eta = 1 / 2
+    eta0 = 2.5
+    eta1 = 0
+    alpha_eta = 1/2
 
     delta = 1 / 2
 
-    eta_schedule =  constant_eta(eta0)#inverse_time_eta(eta0=eta0, alpha=alpha_eta)
+    eta_schedule = inverse_time_eta(eta0=eta0, alpha=alpha_eta,eta1=eta1)
+
 
     print("initial regularized loss:", F_eta(w0, eta0))
     print("constant C:", C)
     print("eta0: ", eta0)
+    print("alpha: ", alpha_eta)
+    print("eta1: ", eta1)
 
     # -----------------------------
     # 1 + 3: Discrete GD paths
@@ -438,7 +394,7 @@ def main():
             delta=delta,
             C=C,
             eta_schedule=eta_schedule,
-            method="gd",
+            method="sdc",
         )
     )
 
@@ -454,8 +410,8 @@ def main():
 
     eta_func_reg = make_inverse_time_eta_func(
         eta0=eta0,
-        alpha=alpha_eta,
-        t0=t_start,
+        eta1=eta1,
+        alpha=alpha_eta
     )
     eta_func_const = lambda t: eta0
 
@@ -463,7 +419,7 @@ def main():
 
     sol_reg_ode = solve_gradient_flow_ode(
         theta0=w0,
-        eta_func=eta_func_const,
+        eta_func=eta_func_reg,
         t_span=(t_start, t_end),
         t_eval=t_eval_dense,
         rtol=1e-9,
@@ -486,44 +442,44 @@ def main():
     # Combined snapshots
     # -----------------------------
 
-    out_dir = Path("./plots/example1")
+    out_dir = Path("./plots/example2")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    level_color = "#7CFF6B"  # soft green
-    balance_color= None #"#06402B"
+    level_color = None#"#9FD46F"  
+    # cmap = "PuRd_r"
+    cmap = "bone"
 
-    cmap = "PuRd_r"
     path_styles = {
         "regularized GD": {
-            "color": "#4CC9F0",  # light blue
+            "color": "#FF6B4A",  # light blue
             "marker": "o",
-            "linewidth": 1.8,
+            "linewidth": 2.4,
             "linestyle": "-",
         },
         "unregularized GD": {
-            "color": "#F9C74F",  # warm yellow
+            "color": "#E0A82E",  # warm yellow
             "marker": "s",
             "linewidth": 1.8,
             "linestyle": "-",
         },
         "regularized ODE": {
-            "color": "#FFFFFF",  # white
+            "color": "#F4F1DE",  # white
             "marker": "^",
             "linewidth": 1.4,
             "linestyle": "--",
         },
         "unregularized ODE": {
-            "color": "#90BE6D",  # soft green
+            "color": "#A78BFA",  # soft green
             "marker": "D",
             "linewidth": 1.4,
             "linestyle": "--",
         },
     }
     marker_every = {
-        "regularized GD": 1,
-        "unregularized GD": 1,
-        "regularized ODE": n_steps*100,
-        "unregularized ODE":n_steps*100, 
+        "regularized GD": 20,
+        "unregularized GD": 20,
+        "regularized ODE": 100,
+        "unregularized ODE":100, 
     }
 
     snapshot_steps = list(range(0, n_steps + 1, snapshot_every))
@@ -565,15 +521,16 @@ def main():
             fr"$\alpha_k = {alpha_k:.3g}$, "
             fr"step/time $= {k}$"
         )
+        title = None
 
-        filename = out_dir / f"conv_4_same_ascaled_step_{k:04d}.png"
+        filename = out_dir / f"alpha_{alpha_eta:.2f}_eta0_{eta0}_baseline_{eta1}_{k:01d}.png"
+        # filename = out_dir / f"conv_4_same_step_{k:04d}.png"
 
         plot_contour_with_paths(
             eta=eta_k,
             paths=paths,
             w_star=w_star,
             level_color=level_color,
-            balance_color=balance_color,
             cmap=cmap,
             xlim=(-3.0, 1.2),
             ylim=(-3.0, 1.2),
@@ -593,7 +550,9 @@ def main():
 
     print("\nFinal products w1*w2:")
     print("regularized GD:   ", np.prod(ws_reg_gd[-1]))
+    print("regularised GD final loss:  ", losses_reg[-1])
     print("unregularized GD: ", np.prod(ws_unreg_gd[-1]))
+    print("unregularised GD final loss:  ", losses_unreg[-1])
     print("regularized ODE:  ", np.prod(traj_reg_ode_full[-1]))
     print("unregularized ODE:", np.prod(traj_unreg_ode_full[-1]))
     print("target w_star:    ", w_star)
