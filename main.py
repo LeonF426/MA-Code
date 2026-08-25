@@ -4,7 +4,11 @@ import math
 import utils
 import os, sys
 from pathlib import Path
-
+from additional_optimization_methods import (
+    run_discrete_method,
+    plot_explicit_euler_stepsize_bound,
+    run_tamed_gd_with_bound
+)
 # Add the project's src/ directory to sys.path
 ROOT = os.path.dirname(__file__)
 SRC = os.path.join(ROOT, "src")
@@ -21,7 +25,7 @@ w_star = 3.14159
 n_steps = 100
 snapshot_every = 10
 
-w0 = np.array([1.0, -2.0], dtype=float)
+w0 = np.array([0.0, -1.0], dtype=float)
 
 L = 2
 d = 1
@@ -35,18 +39,18 @@ C = math.sqrt(L) * (
 
 eta0 = 2.5 
 eta1 = 0
-alpha_eta = 0
+alpha_eta = 1/2
 
 delta = 1 / 2
 
 # Select either constant or polynomial
-eta_schedule = utils.constant_eta(eta0)
-# eta_schedule = utils.inverse_time_eta(eta0=eta0,alpha=alpha_eta,eta1=eta1)
+# eta_schedule = utils.constant_eta(eta0)
+eta_schedule = utils.inverse_time_eta(eta0=eta0,alpha=alpha_eta,eta1=eta1)
 
 
 ## Same for the continuous case:
-eta_func_reg = lambda t: eta0
-# eta_func_reg = utils.make_inverse_time_eta_func(eta0=eta0,alpha=alpha_eta,eta1=eta1)
+# eta_func_reg = lambda t: eta0
+eta_func_reg = utils.make_inverse_time_eta_func(eta0=eta0,alpha=alpha_eta,eta1=eta1)
 
 
 print("initial regularized loss:", utils.F_eta(w0, eta0))
@@ -66,8 +70,30 @@ ws_reg_gd, ws_unreg_gd, etas, lrs, losses_reg, losses_unreg = (
         delta=delta,
         C=C,
         eta_schedule=eta_schedule,
-        method="sdc", # change this to "balancing" if necessary
+        method="explicit_euler_bound", # change this to "balancing" if necessary
     )
+)
+
+lrs_implicit = 0.05
+
+ws_implicit, _, _ = run_discrete_method(
+    theta0=w0,
+    n_steps=n_steps,
+    alpha_schedule=lrs_implicit,
+    eta_schedule=eta_schedule,
+    grad_loss=utils.grad_F_eta,
+    method="implicit_euler",
+)
+
+ws_tamed, etas_tamed, lrs_tamed = run_tamed_gd_with_bound(
+    theta0=w0,
+    n_steps=n_steps,
+    eta_schedule=eta_schedule,
+    grad_loss=utils.grad_F_eta,
+    w_star=w_star,
+    delta=delta,
+    safety=0.95,
+    fallback_alpha=0.1,
 )
 
 # -----------------------------
@@ -108,7 +134,7 @@ traj_unreg_ode_full = sol_unreg_ode.y.T
 # Combined snapshots
 # -----------------------------
 
-out_dir = Path("./plots/example1") #change output path if necessary
+out_dir = Path("./plots/paper") #change output path if necessary
 out_dir.mkdir(parents=True, exist_ok=True)
 
 # color settings:
@@ -140,12 +166,26 @@ path_styles = {
         "linewidth": 1.4,
         "linestyle": "--",
     },
-}
+    "implicit Euler": {
+        "color": "#55C1FF",
+        "marker": "P",
+        "linewidth": 2.0,
+        "linestyle": "-",
+    },
+    "tamed GD": {
+        "color": "#E879F9",
+        "marker": "X",
+        "linewidth": 2.0,
+        "linestyle": "-",
+    },
+    }
 marker_every = {
     "regularized GD": 20,
     "unregularized GD": 20,
     "regularized ODE": 100,
-    "unregularized ODE":100, 
+    "unregularized ODE":100,
+    "implicit Euler": 20,
+    "tamed GD": 20,
 }
 
 snapshot_steps = list(range(0, n_steps + 1, snapshot_every))
@@ -167,6 +207,8 @@ for k in snapshot_steps:
     # Include GD trajectory up to step k
     path_reg_gd = ws_reg_gd[: k + 1]
     path_unreg_gd = ws_unreg_gd[: k + 1]
+    path_implicit = ws_implicit[: k + 1]
+    path_tamed = ws_tamed[: k + 1]
 
     eta_k = eta_schedule(k)
 
@@ -177,19 +219,20 @@ for k in snapshot_steps:
 
     # This determines which paths will be plotted
     paths = {
-        "regularized GD": path_reg_gd,
-        "unregularized GD": path_unreg_gd,
-        "regularized ODE": path_reg_ode,
-        "unregularized ODE": path_unreg_ode,
+        "explicit Euler": path_reg_gd,
+        "implicit Euler": path_implicit,
+        "tamed GD": path_tamed,
+        # "regularized ODE": path_reg_ode,
+        # "unregularized GD": path_unreg_gd,
+        # "unregularized ODE": path_unreg_ode,
     }
 
     title = (
         fr"$\eta = {eta_k:.3f}$, "
-        fr"$\alpha_k = {alpha_k:.3g}$, "
         fr"step/time $= {k}$"
     )
 
-    filename = out_dir / f"alpha_{alpha_eta:.2f}_eta0_{eta0}_baseline_{eta1}_{k:01d}.png"
+    filename = out_dir / f"comp5_eta0_{eta0}_{k:01d}.png"
 
     utils.plot_contour_with_paths(
         eta=eta_k,
@@ -197,28 +240,28 @@ for k in snapshot_steps:
         w_star=w_star,
         level_color=level_color,
         cmap=cmap,
-        xlim=(-3.0, 1.2),
-        ylim=(-3.0, 1.2),
+        xlim=(-3.0, 3.0),
+        ylim=(-3.0, 3.0),
         title=title,
         filename=filename,
         marker_every=marker_every,
         path_styles=path_styles,
     )
 
-print(f"Created {len(snapshot_steps)} combined snapshots in {out_dir}/")
-
-print("\nFinal points:")
-print("regularized GD:   ", ws_reg_gd[-1])
-print("unregularized GD: ", ws_unreg_gd[-1])
-print("regularized ODE:  ", traj_reg_ode_full[-1])
-print("unregularized ODE:", traj_unreg_ode_full[-1])
-
-print("\nFinal products w1*w2:")
-print("regularized GD:   ", np.prod(ws_reg_gd[-1]))
-print("regularised GD final loss:  ", losses_reg[-1])
-print("unregularized GD: ", np.prod(ws_unreg_gd[-1]))
-print("unregularised GD final loss:  ", losses_unreg[-1])
-print("regularized ODE:  ", np.prod(traj_reg_ode_full[-1]))
-print("unregularized ODE:", np.prod(traj_unreg_ode_full[-1]))
-print("target w_star:    ", w_star)
-
+# print(f"Created {len(snapshot_steps)} combined snapshots in {out_dir}/")
+#
+# print("\nFinal points:")
+# print("regularized GD:   ", ws_reg_gd[-1])
+# print("unregularized GD: ", ws_unreg_gd[-1])
+# print("regularized ODE:  ", traj_reg_ode_full[-1])
+# print("unregularized ODE:", traj_unreg_ode_full[-1])
+#
+# print("\nFinal products w1*w2:")
+# print("regularized GD:   ", np.prod(ws_reg_gd[-1]))
+# print("regularised GD final loss:  ", losses_reg[-1])
+# print("unregularized GD: ", np.prod(ws_unreg_gd[-1]))
+# print("unregularised GD final loss:  ", losses_unreg[-1])
+# print("regularized ODE:  ", np.prod(traj_reg_ode_full[-1]))
+# print("unregularized ODE:", np.prod(traj_unreg_ode_full[-1]))
+# print("target w_star:    ", w_star)
+#

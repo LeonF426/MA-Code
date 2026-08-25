@@ -34,7 +34,7 @@ def F_eta(w, eta):
     F_eta(w1, w2) = (w_* - w2*w1)^2 + eta^2 (w1^2 + w2^2)
     """
     w1, w2 = w
-    return (w_star - w2 * w1) ** 2 + eta ** 2 * (w1 ** 2 + w2 ** 2)
+    return (w_star - w2 * w1) ** 2 + eta ** 2 * (w1 ** 2 + w2 ** 2) + eta**4
 
 
 def grad_F_eta(w, eta):
@@ -48,6 +48,29 @@ def grad_F_eta(w, eta):
     d_w2 = -2.0 * g * w1 + 2.0 * eta ** 2 * w2
 
     return np.array([d_w1, d_w2], dtype=float)
+
+def explicit_euler_stepsize_bound(w, eta, w_star, safety=0.95):
+    """
+    Paper's explicit-Euler stability bound evaluated at the current iterate.
+
+    safety < 1 keeps the step strictly inside the stability region.
+    """
+    w1, w2 = np.asarray(w, dtype=float)
+
+    denominator = (
+        w1**2
+        + w2**2
+        + 2.0 * eta**2
+        + np.sqrt(
+            (w1**2 - w2**2) ** 2
+            + (4.0 * w1 * w2 - w_star) ** 2
+        )
+    )
+
+    if denominator <= 0.0:
+        return np.inf
+
+    return safety * 2.0 / denominator
 
 
 # ---------------------------------------------------------------------
@@ -103,27 +126,45 @@ def run_descent_with_schedulers(
         losses_reg.append(loss_reg)
         losses_unreg.append(loss_unreg)
 
-        # Strong Descent Condition Learning Rate
-        alpha_k = 2.0 * (1.0 - delta) / C * eta_k ** 2 / loss_reg
-
-        # Balancing Condition learning rate
-        a_k_b_1 = eta_k **2 / (4*loss_reg)
-        a_k_b_2 = 3*lab*eta_k**(2*L-2)* a_k_b_1**2
-        a_k_b_3 = (lab*eta_k ** (2*L-2))**(-1)
-        
-        alpha_k_b = np.min([a_k_b_1,a_k_b_2, a_k_b_3])
 
 
-        if method == "balancing":
-            alpha_k = alpha_k_b
+        # Strong Descent Condition
+        alpha_k_sdc = (
+            2.0 * (1.0 - delta)
+            / C
+            * eta_k**2
+            / loss_reg
+        )
 
-        lrs[k] = alpha_k
+# Balancing Condition
+        a_k_b_1 = eta_k**2 / (4.0 * loss_reg)
+        a_k_b_2 = 3.0 * lab * eta_k ** (2 * L - 2) * a_k_b_1**2
+        a_k_b_3 = (lab * eta_k ** (2 * L - 2)) ** (-1)
 
-        grad_reg = grad_F_eta(w_reg, eta_k)
-        grad_unreg = grad_F_eta(w_unreg, 0.0)
+        alpha_k_balancing = np.min([
+            a_k_b_1,
+            a_k_b_2,
+            a_k_b_3,
+        ])
 
-        ws_reg[k + 1] = w_reg - alpha_k * grad_reg
-        ws_unreg[k + 1] = w_unreg - 0.025 * grad_unreg
+# Explicit-Euler stability bound at the current regularized iterate
+        alpha_k_euler = explicit_euler_stepsize_bound(
+            w=w_reg,
+            eta=eta_k,
+            w_star=w_star,
+            safety=0.95,
+        )
+
+        if method == "sdc":
+            alpha_k = alpha_k_sdc
+        elif method == "balancing":
+            alpha_k = alpha_k_balancing
+        elif method == "explicit_euler_bound":
+            alpha_k = alpha_k_euler
+        else:
+            raise ValueError(
+                "method must be 'sdc', 'balancing', or 'explicit_euler_bound'"
+            )
 
     etas[n_steps] = eta_schedule(n_steps)
 
@@ -334,7 +375,7 @@ def plot_contour_with_paths(
     ax.set_ylim(*ylim)
     ax.set_aspect("equal")
 
-    #ax.legend(frameon=True, fontsize=8, loc="best")
+    ax.legend(frameon=True, fontsize=8, loc="best")
 
     fig.tight_layout()
 
