@@ -232,7 +232,7 @@ for k in snapshot_steps:
         fr"step/time $= {k}$"
     )
 
-    filename = out_dir / f"comp5_eta0_{eta0}_{k:01d}.png"
+    filename = None #out_dir / f"comp5_eta0_{eta0}_{k:01d}.png"
 
     utils.plot_contour_with_paths(
         eta=eta_k,
@@ -250,18 +250,18 @@ for k in snapshot_steps:
 
 # print(f"Created {len(snapshot_steps)} combined snapshots in {out_dir}/")
 #
-# print("\nFinal points:")
-# print("regularized GD:   ", ws_reg_gd[-1])
-# print("unregularized GD: ", ws_unreg_gd[-1])
-# print("regularized ODE:  ", traj_reg_ode_full[-1])
-# print("unregularized ODE:", traj_unreg_ode_full[-1])
-#
-# print("\nFinal products w1*w2:")
-# print("regularized GD:   ", np.prod(ws_reg_gd[-1]))
-# print("regularised GD final loss:  ", losses_reg[-1])
-# print("unregularized GD: ", np.prod(ws_unreg_gd[-1]))
-# print("unregularised GD final loss:  ", losses_unreg[-1])
-# print("regularized ODE:  ", np.prod(traj_reg_ode_full[-1]))
-# print("unregularized ODE:", np.prod(traj_unreg_ode_full[-1]))
-# print("target w_star:    ", w_star)
-#
+print("\nFinal points:")
+print("regularized GD:   ", ws_reg_gd[-1])
+print("unregularized GD: ", ws_unreg_gd[-1])
+print("regularized ODE:  ", traj_reg_ode_full[-1])
+print("unregularized ODE:", traj_unreg_ode_full[-1])
+
+print("\nFinal products w1*w2:")
+print("regularized GD:   ", np.prod(ws_reg_gd[-1]))
+print("regularised GD final loss:  ", losses_reg[-1])
+print("unregularized GD: ", np.prod(ws_unreg_gd[-1]))
+print("unregularised GD final loss:  ", losses_unreg[-1])
+print("regularized ODE:  ", np.prod(traj_reg_ode_full[-1]))
+print("unregularized ODE:", np.prod(traj_unreg_ode_full[-1]))
+print("target w_star:    ", w_star)
+
