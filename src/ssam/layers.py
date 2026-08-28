@@ -1,18 +1,25 @@
-# src/lin_sgd/layers.py
+"""Small reusable neural-network layers."""
+
+from __future__ import annotations
+
 import torch
-import torch.nn as nn
-import math
+from torch import nn
+
 
 class DiagLinear(nn.Module):
-    def __init__(self, dim: int):
+    """A memory-efficient square linear layer with a diagonal weight matrix."""
+
+    def __init__(self, dim: int, bias: bool = False) -> None:
         super().__init__()
+        if dim < 1:
+            raise ValueError("dim must be positive")
         self.dim = dim
         self.weight = nn.Parameter(torch.empty(dim))
-        self.reset_parameters()
+        self.bias = nn.Parameter(torch.empty(dim)) if bias else None
 
-    def reset_parameters(self):
-        bound = 1 / math.sqrt(1.0)
-        nn.init.uniform_(self.weight, -bound, bound)
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        outputs = inputs * self.weight
+        return outputs if self.bias is None else outputs + self.bias
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * self.weight
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}, bias={self.bias is not None}"

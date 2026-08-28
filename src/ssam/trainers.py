@@ -1,156 +1,173 @@
-# src/lin_sgd/trainers.py
+"""One training loop for GD, SGD, S-SAM, and future update rules."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+import math
+from typing import Any
+
 import torch
-from typing import Callable, Dict
-from .losses import regularized_loss
-import torch.nn as nn
-from typing import List
-from .layers import DiagLinear  # adjust import to your package layout
+from torch import nn
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
-def get_layer_matrices(model: nn.Module) -> List[torch.Tensor]:
+from .config import training_config
+from .schedules import build_schedule
+from .update_rules import build_update_rule
+
+
+LossFunction = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+
+@dataclass
+class TrainingResult:
+    """Training outputs kept small enough for plotting and notebook use."""
+
+    model: nn.Module
+    history: dict[str, list[float | int]]
+    parameter_snapshots: list[torch.Tensor] = field(default_factory=list)
+    snapshot_losses: list[float] = field(default_factory=list)
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+def _loss_from_name(name: str) -> LossFunction:
+    def align_scalar_output(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if predictions.ndim == targets.ndim + 1 and predictions.shape[-1] == 1:
+            return predictions.squeeze(-1)
+        return predictions
+
+    losses: dict[str, LossFunction] = {
+        "mse": lambda predictions, targets: nn.functional.mse_loss(
+            align_scalar_output(predictions, targets), targets
+        ),
+        "cross_entropy": nn.CrossEntropyLoss(),
+        "bce_logits": lambda predictions, targets: nn.functional.binary_cross_entropy_with_logits(
+            align_scalar_output(predictions, targets), targets
+        ),
+        "l1": lambda predictions, targets: nn.functional.l1_loss(
+            align_scalar_output(predictions, targets), targets
+        ),
+    }
+    try:
+        return losses[name.lower()]
+    except KeyError as exc:
+        raise ValueError(f"Unknown loss {name!r}. Available: {sorted(losses)}") from exc
+
+
+def _device(name: str) -> torch.device:
+    if name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(name)
+
+
+def _as_dataset(data: Dataset | DataLoader | tuple[torch.Tensor, torch.Tensor]) -> Dataset:
+    if isinstance(data, DataLoader):
+        return data.dataset
+    if isinstance(data, tuple) and len(data) == 2:
+        return TensorDataset(*data)
+    if isinstance(data, Dataset):
+        return data
+    raise TypeError("data must be a Dataset, DataLoader, or (inputs, targets) tuple")
+
+
+def _make_loader(
+    data: Dataset | DataLoader | tuple[torch.Tensor, torch.Tensor],
+    config: Mapping[str, Any],
+) -> DataLoader:
+    if isinstance(data, DataLoader) and config["algorithm"] != "gd":
+        return data
+    dataset = _as_dataset(data)
+    full_batch = config["algorithm"] == "gd"
+    batch_size = len(dataset) if full_batch else min(int(config["batch_size"]), len(dataset))
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=not full_batch,
+        num_workers=int(config.get("num_workers", 0)),
+    )
+
+
+def flatten_parameters(model: nn.Module) -> torch.Tensor:
+    return torch.cat([parameter.detach().reshape(-1).cpu() for parameter in model.parameters()])
+
+
+def train(
+    model: nn.Module,
+    data: Dataset | DataLoader | tuple[torch.Tensor, torch.Tensor],
+    config: Mapping[str, Any],
+    loss_fn: LossFunction | None = None,
+    callbacks: list[Callable[[int, nn.Module, dict[str, Any]], None]] | None = None,
+) -> TrainingResult:
+    """Train a model using the algorithm selected in the input dictionary.
+
+    ``gd`` uses one full-dataset batch, ``sgd`` uses mini-batches, and ``s_sam``
+    uses the same mini-batches with gradients evaluated at random perturbations.
     """
-    Return a list [W1, ..., WL] of weight matrices for the model.
-    For DiagLinear layers, returns the full diagonal matrix.
-    """
-    Ws = []
-    for layer in model.layers:  # assumes MixedLinearNet with .layers
-        if isinstance(layer, DiagLinear):
-            W = torch.diag(layer.weight)  # (d,d)
-        elif isinstance(layer, nn.Linear):
-            W = layer.weight              # (out_dim, in_dim)
-        else:
-            continue
-        Ws.append(W)
-    return Ws
 
-def max_balancing_norm(model: nn.Module) -> float:
-    """
-    Compute max_l || W_{l+1}^2 - W_l^2 ||_F for the *current* model weights.
-    Interprets W^2 as matrix product W @ W (for square layers).
-    """
-    Ws = get_layer_matrices(model)
-    if len(Ws) < 2:
-        return 0.0
-
-    norms = []
-    for l in range(len(Ws) - 1):
-        Wl = Ws[l]
-        Wlp1 = Ws[l + 1]
-
-        # interpret W^2 as W @ W (assumes square)
-        Wl2 = Wl @ Wl
-        Wlp12 = Wlp1 @ Wlp1
-
-        diff = Wlp12 - Wl2
-        norms.append(torch.norm(diff, p="fro"))
-
-    max_norm = torch.stack(norms).max()
-    return float(max_norm.item())
-
-
-def gradient_descent_train(
-    model,
-    data_sampler: Callable[[int], tuple],
-    n_steps: int,
-    lr_schedule: Callable[[int,float], float],
-    eta_schedule: Callable[[int], float],
-    batch_size: int,
-    device: torch.device,
-) -> Dict:
+    resolved = training_config(config)
+    torch.manual_seed(int(resolved.get("seed", 0)))
+    device = _device(str(resolved.get("device", "auto")))
     model.to(device)
-    history = {"step": [], "lr": [], "eta": [], "loss": [], "balancedness": []}
-    
+    loader = _make_loader(data, resolved)
+    loss_function = loss_fn or _loss_from_name(str(resolved.get("loss", "mse")))
+    learning_rate = build_schedule(resolved["learning_rate"])
+    sharpness = build_schedule(resolved.get("sharpness_scale", 0.0))
+    update_rule = build_update_rule(model, resolved)
+    callbacks = callbacks or []
+    checkpoint_every = int(resolved.get("checkpoint_every", 0))
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=1)
+    history: dict[str, list[float | int]] = {
+        "step": [],
+        "epoch": [],
+        "loss": [],
+        "learning_rate": [],
+        "sharpness_scale": [],
+    }
+    result = TrainingResult(model=model, history=history, config=resolved)
+    if checkpoint_every:
+        result.parameter_snapshots.append(flatten_parameters(model))
+        result.snapshot_losses.append(float("nan"))
 
-    for k in range(n_steps):
-        
-        X, Y = data_sampler(batch_size)
-        X, Y = X.to(device), Y.to(device)
+    target_steps = int(resolved.get("steps", 0))
+    epochs = (
+        math.ceil(target_steps / max(1, len(loader)))
+        if target_steps
+        else int(resolved.get("epochs", 1))
+    )
+    step = 0
+    stop = False
+    for epoch in range(epochs):
+        for inputs, targets in loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            lr = float(learning_rate(step))
+            scale = float(sharpness(step))
+            for group in update_rule.optimizer.param_groups:
+                group["lr"] = lr
 
+            def closure() -> torch.Tensor:
+                return loss_function(model(inputs), targets)
 
-        eta = eta_schedule(k)
-        loss = regularized_loss(model, X, Y, eta)
-        loss_scalar = loss.item()
-        lr = lr_schedule(k,loss_scalar)
+            loss = update_rule.step(closure, scale)
+            record = {
+                "step": step,
+                "epoch": epoch,
+                "loss": loss,
+                "learning_rate": lr,
+                "sharpness_scale": scale,
+            }
+            for key, value in record.items():
+                history[key].append(value)
+            if checkpoint_every and (step + 1) % checkpoint_every == 0:
+                result.parameter_snapshots.append(flatten_parameters(model))
+                result.snapshot_losses.append(loss)
+            for callback in callbacks:
+                callback(step, model, record)
 
-        for pg in optimizer.param_groups:
-            pg["lr"] = lr
+            step += 1
+            if target_steps and step >= target_steps:
+                stop = True
+                break
+        if stop:
+            break
 
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        balancing_val = max_balancing_norm(model)
-
-        history["step"].append(k)
-        history["lr"].append(float(lr))
-        history["eta"].append(float(eta))
-        history["loss"].append(loss_scalar)
-        history["balancedness"].append(balancing_val)
-
-    return history
-
-
-def sgd_with_weight_noise(
-    model,
-    data_sampler,
-    n_steps: int,
-    lr_schedule,
-    eta_schedule,
-    batch_size: int,
-    device: torch.device,
-):
-    """
-    Noisy SGD: at step k, use learning rate lr_schedule(k) and noise std eta_schedule(k).
-    The gradient is computed at a perturbed parameter vector, but the update is
-    applied to the clean parameters.
-
-    data_sampler(bs) -> (X, Y) on the correct device or moved below.
-    """
-    model.to(device)
-
-    # Create optimizer ONCE; actual lr will be overwritten every step.
-    optimizer = torch.optim.SGD(model.parameters(), lr=1.0)
-
-    history = {"step": [], "lr": [], "eta": [], "loss": []}
-
-    for k in range(n_steps):
-        lr_k = lr_schedule(k)
-        eta_k = eta_schedule(k)
-
-        # ensure optimizer actually uses lr_k at this step
-        for pg in optimizer.param_groups:
-            pg["lr"] = lr_k
-
-        X, Y = data_sampler(batch_size)
-        X, Y = X.to(device), Y.to(device)
-
-        # Save clean params
-        saved_params = [p.data.clone() for p in model.parameters()]
-
-        # Add Gaussian perturbation: θ̃_k = θ_k + ξ_k,  ξ_k ~ N(0, η_k^2 I)
-        with torch.no_grad():
-            for p in model.parameters():
-                p.add_(torch.randn_like(p) * eta_k)
-
-        optimizer.zero_grad()
-        pred = model(X)
-        loss = ((Y - pred) ** 2).mean()
-        loss.backward()
-
-        # Restore clean θ_k
-        with torch.no_grad():
-            for p, saved in zip(model.parameters(), saved_params):
-                p.data.copy_(saved)
-
-        # Now apply SGD update using ∇_θ ℓ(θ̃_k)
-        optimizer.step()
-
-        history["step"].append(k)
-        history["lr"].append(lr_k)
-        history["eta"].append(eta_k)
-        history["loss"].append(loss.item())
-
-    return history
-
+    return result
