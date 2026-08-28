@@ -1,13 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ssam"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Configuration-driven GD, SGD, and stochastic S-SAM experiments"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
-    "matplotlib>=3.10.8",
-    "numpy>=2.4.2",
-    "scipy>=1.17.1",
-    "scipy-stubs~=1.17.1",
-    "torch>=2.10.0",
+    "numpy>=1.26",
+    "torch>=2.2",
 ]
+
+[project.optional-dependencies]
+visualization = ["matplotlib>=3.8", "scikit-learn>=1.4"]
+benchmarks = ["torchvision>=0.17"]
+dev = ["pytest>=8", "matplotlib>=3.8", "scikit-learn>=1.4", "torchvision>=0.17"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
