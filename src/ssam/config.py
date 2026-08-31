@@ -60,19 +60,19 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
     model = normalized["model"]
     training = normalized["training"]
 
-    model_name = str(model.get("name", "")).lower()
-    if not model_name:
-        raise ValueError("model.name is required")
-    model["name"] = model_name
+    model_type = str(model.get("type", "")).lower()
+    if not model_type:
+        raise ValueError("model.type is required")
+    model["type"] = model_type
 
-    if model_name in {"mlp", "mixed_linear"}:
+    if model_type in {"mlp", "mixed_linear"}:
         if int(model.get("input_dim", 0)) < 1:
             raise ValueError("model.input_dim must be positive")
         if "layers" not in model and int(model.get("depth", 0)) < 1:
             raise ValueError("model.depth must be at least 1")
-    elif not model_name.startswith("torchvision/"):
+    elif not model_type.startswith("torchvision/"):
         raise ValueError(
-            "model.name must be 'mlp', 'mixed_linear', or 'torchvision/<model>'"
+            "model.type must be 'mlp', 'mixed_linear', or 'torchvision/<model>'"
         )
 
     algorithm = str(training.get("algorithm", "")).lower().replace("-", "_")

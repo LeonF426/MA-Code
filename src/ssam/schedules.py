@@ -63,6 +63,106 @@ def _piecewise(config: Mapping[str, Any]) -> Schedule:
     return schedule
 
 
+def strong_descent_diag(
+    *,
+    dimension: int,
+    depth: int,
+    delta: float,
+    safety: float = 1.0,
+    max_lr: float | None = None,
+    loss_floor: float = 1e-12,
+):
+    """
+    Return alpha_k satisfying
+
+        alpha_k <= 2(1-delta) eta_k^2
+                   ---------------------
+                   C(d,L) L_R(eta_k, theta_k)
+
+    where
+
+        C(d,L) = sqrt(L) * (
+            2 + 2*d*sqrt(L) + 5*sqrt(L-1)
+        ).
+    """
+
+    if dimension < 1:
+        raise ValueError("dimension must be positive")
+
+    if depth < 1:
+        raise ValueError("depth must be positive")
+
+    if not 0.0 < delta < 1.0:
+        raise ValueError("delta must be in (0, 1)")
+
+    if not 0.0 < safety <= 1.0:
+        raise ValueError("safety must be in (0, 1]")
+
+    if loss_floor <= 0.0:
+        raise ValueError("loss_floor must be positive")
+
+    if max_lr is not None and max_lr <= 0.0:
+        raise ValueError("max_lr must be positive")
+
+    sqrt_depth = math.sqrt(depth)
+
+    constant = sqrt_depth * (
+        2.0
+        + 2.0 * dimension * sqrt_depth
+        + 5.0 * math.sqrt(depth - 1)
+    )
+
+    def schedule(
+        step: int,
+        sharpness_scale: float,
+        regularized_loss: float,
+    ) -> float:
+        del step  # Included for compatibility and logging.
+
+        eta = float(sharpness_scale)
+        loss = float(regularized_loss)
+
+        if not math.isfinite(eta) or eta <= 0.0:
+            raise ValueError(
+                f"eta_k must be positive and finite, received {eta}"
+            )
+
+        if not math.isfinite(loss):
+            raise FloatingPointError(
+                f"L_R must be finite, received {loss}"
+            )
+
+        if loss < 0.0:
+            raise ValueError(
+                f"L_R must be non-negative, received {loss}"
+            )
+
+        safe_loss = max(loss, loss_floor)
+
+        upper_bound = (
+            2.0
+            * (1.0 - delta)
+            * eta**2
+            / (constant * safe_loss)
+        )
+
+        learning_rate = safety * upper_bound
+
+        # Taking the minimum preserves the theorem's bound.
+        if max_lr is not None:
+            learning_rate = min(learning_rate, max_lr)
+
+        if not math.isfinite(learning_rate):
+            raise FloatingPointError(
+                f"Computed non-finite learning rate: {learning_rate}"
+            )
+
+        return learning_rate
+
+    return schedule
+
+
+
 register_schedule("constant", _constant)
 register_schedule("inverse_time", _inverse_time)
 register_schedule("linear", _linear)

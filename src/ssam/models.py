@@ -162,7 +162,7 @@ def _initialize_tensor(tensor: torch.Tensor, name: str, options: Mapping[str, An
 
 def initialize_model(model: nn.Module, initialization: str | Mapping[str, Any]) -> None:
     options = {"name": initialization} if isinstance(initialization, str) else dict(initialization)
-    name = str(options.pop("name", "default")).lower()
+    name = str(options.pop("type", "default")).lower()
     if name == "pretrained":
         return
     for module in model.modules():
@@ -213,7 +213,7 @@ def build_model(config: Mapping[str, Any]) -> nn.Module:
     """Build a configured custom or torchvision benchmark model."""
 
     resolved = model_config(config)
-    if resolved["name"].startswith("torchvision/"):
+    if resolved["type"].startswith("torchvision/"):
         return _build_torchvision_model(resolved)
 
     model = ConfigurableNet(

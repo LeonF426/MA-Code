@@ -12,7 +12,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from .config import training_config
-from .schedules import build_schedule
+from .schedules import build_schedule, strong_descent_diag
 from .update_rules import build_update_rule
 
 
@@ -110,7 +110,19 @@ def train(
     model.to(device)
     loader = _make_loader(data, resolved)
     loss_function = loss_fn or _loss_from_name(str(resolved.get("loss", "mse")))
-    learning_rate = build_schedule(resolved["learning_rate"])
+
+    if config["training"]["learning_rate"]["name"] == "strong_descent_diag":
+        learning_rate = strong_descent_diag(
+            dimension=config["model"]["input_dim"],
+            depth=len(config["model"]["layers"]),
+            delta=config["training"]["learning_rate"]["delta"],
+            safety= config["training"]["learning_rate"]["safety"],
+            max_lr=config["training"]["learning_rate"]["max_lr"]
+        )
+    else:
+        learning_rate = build_schedule(resolved["learning_rate"])
+    print("building schedule worked")
+
     sharpness = build_schedule(resolved.get("sharpness_scale", 0.0))
     update_rule = build_update_rule(model, resolved)
     callbacks = callbacks or []
@@ -134,13 +146,24 @@ def train(
         if target_steps
         else int(resolved.get("epochs", 1))
     )
+    print(f"Training {config["model"]["name"]} of type '{config["model"]["type"]}'")
+    print(f"Learning rate schedule: {config["training"]["learning_rate"]["name"]}")
     step = 0
     stop = False
     for epoch in range(epochs):
         for inputs, targets in loader:
             inputs, targets = inputs.to(device), targets.to(device)
-            lr = float(learning_rate(step))
             scale = float(sharpness(step))
+
+            if config["training"]["learning_rate"]["name"] == "strong_descent_diag":
+                with torch.no_grad():
+                    reg_loss_value = regularized_objective()
+
+                    lr = learning_rate(step,scale,reg_loss_value)
+            else:
+                lr = float(learning_rate(step))
+
+
             for group in update_rule.optimizer.param_groups:
                 group["lr"] = lr
 
