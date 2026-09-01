@@ -43,14 +43,21 @@ def plot_training_history(
     plt = _pyplot(show)
     history = result.history if isinstance(result, TrainingResult) else result
     steps = history["step"]
-    fig, axes = plt.subplots(1, 3, figsize=(13, 3.8))
+    fig, axes = plt.subplots(1, 4, figsize=(13, 3.8))
     series = [
         ("loss", "Loss"),
+        ("layer_balance", "Layer Balance"),
         ("learning_rate", "Learning rate"),
         ("sharpness_scale", "Sharpness scale"),
     ]
     for axis, (key, label) in zip(axes, series):
-        axis.plot(steps, history[key])
+        if key == "layer_balance":
+            axis.plot(steps, history[key],label=[f"layers {i+2} & {i+1}" for i in range(len(history[key][0]))])
+            axis.legend()
+        else:
+            axis.plot(steps, history[key])
+
+
         axis.set(xlabel="Step", ylabel=label, title=label)
         axis.grid(alpha=0.25)
     fig.tight_layout()

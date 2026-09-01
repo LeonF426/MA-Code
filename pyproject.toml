@@ -9,8 +9,10 @@ description = "Configuration-driven GD, SGD, and stochastic S-SAM experiments"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "matplotlib>=3.10.9",
     "numpy>=1.26",
     "torch>=2.2",
+    "torchvision>=0.28.0",
 ]
 
 [project.optional-dependencies]

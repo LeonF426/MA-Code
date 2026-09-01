@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import math
 from typing import Any
 
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
@@ -128,12 +129,13 @@ def train(
     callbacks = callbacks or []
     checkpoint_every = int(resolved.get("checkpoint_every", 0))
 
-    history: dict[str, list[float | int]] = {
+    history: dict[str, list[float | int | list]] = {
         "step": [],
         "epoch": [],
         "loss": [],
         "learning_rate": [],
         "sharpness_scale": [],
+        "layer_balance": []
     }
     result = TrainingResult(model=model, history=history, config=resolved)
     if checkpoint_every:
@@ -157,6 +159,8 @@ def train(
 
             if config["training"]["learning_rate"]["name"] == "strong_descent_diag":
                 with torch.no_grad():
+                    #TODO: complete this part. The regularized_objective() function is not yet written and shall be
+                    #   replaced by an efficient MonteCarlo approximation of the regularized loss at the current parameter configuration.
                     reg_loss_value = regularized_objective()
 
                     lr = learning_rate(step,scale,reg_loss_value)
@@ -171,13 +175,36 @@ def train(
                 return loss_function(model(inputs), targets)
 
             loss = update_rule.step(closure, scale)
+
+            #TODO: extract layer-imbalance in each iteration.
+            layer_balance = []
+
+            for i in range(len(config["model"]["layers"])-1):
+
+                m_1 = model.layers[i + 1].weight.detach()
+                m_2 = model.layers[i].weight.detach()
+
+                if config["model"]["layers"][i+1]["type"] == "diag":
+                    m_1 = np.diag(m_1)
+                if config["model"]["layers"][i]["type"] == "diag":
+                    m_2 = np.diag(m_2)
+
+                b = np.linalg.norm(
+                    (
+                        m_1.transpose(0,1) @ m_1 - m_2 @ m_2.transpose(0,1)
+                    )
+                    ,'fro')
+                layer_balance.append(b)
+
             record = {
                 "step": step,
                 "epoch": epoch,
                 "loss": loss,
                 "learning_rate": lr,
                 "sharpness_scale": scale,
+                "layer_balance": layer_balance
             }
+
             for key, value in record.items():
                 history[key].append(value)
             if checkpoint_every and (step + 1) % checkpoint_every == 0:

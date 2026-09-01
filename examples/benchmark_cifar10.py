@@ -5,7 +5,8 @@ from ssam import build_dataset, build_model, train
 
 CONFIG = {
     "model": {
-        "name": "torchvision/resnet18",
+        "name": "mnist",
+        "type": "torchvision/resnet18",
         "num_classes": 10,
         "parameter_init": {"name": "default"},
     },
