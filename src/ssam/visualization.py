@@ -38,7 +38,7 @@ def plot_training_history(
     path: str | Path | None = None,
     show: bool = False,
 ):
-    """Plot loss, learning-rate, and sharpness-scale histories."""
+    """Plot loss, balancedness, learning-rate, and sharpness histories."""
 
     plt = _pyplot(show)
     history = result.history if isinstance(result, TrainingResult) else result
@@ -52,12 +52,21 @@ def plot_training_history(
     ]
     for axis, (key, label) in zip(axes, series):
         if key == "layer_balance":
-            axis.plot(steps, history[key],label=[f"layers {i+2} & {i+1}" for i in range(len(history[key][0]))])
+            if history[key] and history[key][0]:
+                labels = [
+                    f"layers {i + 2} & {i + 1}"
+                    for i in range(len(history[key][0]))
+                ]
+                axis.plot(steps, history[key], label=labels)
+                axis.legend()
+        elif key == "loss" and "clean_loss" in history:
+            axis.plot(steps, history["clean_loss"], label="clean")
+            regularized = np.asarray(history.get("regularized_loss", []), dtype=float)
+            if regularized.size and np.isfinite(regularized).any():
+                axis.plot(steps, regularized, label="regularized estimate", alpha=0.8)
             axis.legend()
         else:
             axis.plot(steps, history[key])
-
-
         axis.set(xlabel="Step", ylabel=label, title=label)
         axis.grid(alpha=0.25)
     fig.tight_layout()
@@ -185,3 +194,4 @@ def plot_loss_landscape(
     fig.colorbar(contour, ax=axis, label="Loss")
     fig.tight_layout()
     return _finish(fig, path, show)
+

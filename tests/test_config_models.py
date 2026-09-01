@@ -43,3 +43,25 @@ def test_diagonal_identity_initialization():
 def test_unknown_activation_is_clear():
     with pytest.raises(ValueError, match="Unknown activation"):
         build_model({"name": "mlp", "input_dim": 2, "depth": 2, "activation": "magic"})
+
+
+def test_free_form_name_is_separate_from_model_type_and_init_type():
+    config = normalize_config({
+        "model": {
+            "name": "personal_run_17",
+            "type": "mlp",
+            "input_dim": 2,
+            "depth": 1,
+            "parameter_init": {"type": "ones"},
+        }
+    })
+    model = build_model(config)
+    assert config["model"]["name"] == "personal_run_17"
+    assert config["model"]["type"] == "mlp"
+    assert torch.all(model.layers[0].weight == 1)
+
+
+def test_free_form_name_without_type_has_clear_error():
+    with pytest.raises(ValueError, match="free-form model.name requires model.type"):
+        build_model({"name": "personal_run_17", "input_dim": 2, "depth": 1})
+

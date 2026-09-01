@@ -27,7 +27,8 @@ from ssam import build_dataset, build_model, train
 
 config = {
     "model": {
-        "name": "mlp",
+        "name": "my_experiment",   # free-form label
+        "type": "mlp",             # implementation selector
         "input_dim": 20,
         "output_dim": 1,
         "depth": 4,                 # total number of trainable layers
@@ -35,7 +36,7 @@ config = {
         "activation": "gelu",      # identity is supported
         "output_activation": "identity",
         "bias": True,
-        "parameter_init": {"name": "xavier_uniform"},
+        "parameter_init": {"type": "xavier_uniform"},
     },
     "training": {
         "algorithm": "s_sam",      # gd, sgd, or s_sam
@@ -45,7 +46,12 @@ config = {
         "sharpness_scale": {
             "name": "inverse_time", "initial": 0.2, "power": 0.5, "floor": 0.01
         },
-        "perturbation": {"samples": 2, "normalized": False},
+        "perturbation": {
+            "samples": 2,
+            "normalized": False,
+            "antithetic": False,
+            "preserve_buffers": True,
+        },
         "optimizer": {"name": "sgd", "momentum": 0.9},
         "loss": "mse",
         "checkpoint_every": 10,
@@ -60,7 +66,8 @@ result = train(model, dataset, config)
 
 ```python
 "model": {
-    "name": "mixed_linear",
+    "name": "diagonal_test_1",
+    "type": "mixed_linear",
     "input_dim": 8,
     "layers": [
         {"type": "diag", "out_dim": 8, "activation": "identity"},
@@ -68,7 +75,7 @@ result = train(model, dataset, config)
         {"type": "dense", "out_dim": 1},
     ],
     "bias": False,
-    "parameter_init": {"name": "xavier_uniform"},
+    "parameter_init": {"type": "xavier_uniform"},
 }
 ```
 
@@ -88,8 +95,42 @@ and `orthogonal`.
   otherwise it is the per-coordinate Gaussian standard deviation.
 
 Both learning rate and sharpness scale accept `constant`, `inverse_time`, `linear`,
-`cosine`, or `piecewise` schedules. A custom update can be added without editing the
-trainer:
+`cosine`, or `piecewise` schedules. For S-SAM, the theorem-inspired adaptive policy
+can use the current Monte Carlo objective estimate:
+
+```python
+"learning_rate": {
+    "name": "strong_descent_diag",
+    "delta": 0.5,
+    "safety": 0.95,
+    "max_lr": 0.1,
+    "loss_floor": 1e-12,
+    # "dimension": 2,  # optional; otherwise inferred
+    # "depth": 3,      # optional; otherwise inferred
+}
+```
+
+At each S-SAM step the implementation computes the online means
+`mean(loss(theta + xi))` and `mean(gradient(loss(theta + xi)))` in one loop. Thus
+the regularized-objective schedule does not perform a second set of perturbed
+forward passes, and memory use does not grow with `samples`. The clean and estimated
+regularized losses are available as `result.history["clean_loss"]` and
+`result.history["regularized_loss"]`.
+
+For a separate diagnostic evaluation, use
+`estimate_regularized_objective(model, closure, scale, samples=...)`. It also uses
+an online mean and restores parameters and buffers afterwards. `antithetic: true`
+reuses each sampled direction with both signs and therefore requires an even sample
+count. `max_grad_norm` may be set under `perturbation` as an additional stability
+guard.
+
+The exact bound in Theorem 6.1.1 applies under its diagonal-model and exact-objective
+assumptions. For general neural networks and finitely many perturbation samples,
+`strong_descent_diag` is an approximate adaptive heuristic; set `dimension` and
+`depth` explicitly when the theorem's quantities do not match the automatic model
+inference.
+
+A custom update can be added without editing the trainer:
 
 ```python
 from ssam import register_update_rule
@@ -120,7 +161,7 @@ grid of size `n` requires `n²` forward passes.
 
 Any torchvision constructor can be selected as `torchvision/<name>`, including
 `resnet18`, `resnet50`, `mobilenet_v3_small`, and `vit_b_16`. Classifier heads are
-adapted with `num_classes`; `parameter_init.name: pretrained` requests default
+adapted with `num_classes`; `parameter_init.type: pretrained` requests default
 weights. MNIST, Fashion-MNIST, CIFAR-10, and CIFAR-100 are available through
 `build_dataset`.
 
@@ -136,7 +177,8 @@ src/ssam/
   config.py          dictionary defaults and validation
   models.py          custom and torchvision model builders
   data.py            synthetic and benchmark datasets
-  schedules.py       reusable scalar schedules
+  schedules.py       scalar schedules and objective-dependent LR policies
+  objectives.py      efficient perturbed-objective estimators
   update_rules.py    GD/SGD and S-SAM parameter updates
   trainers.py        shared training loop and result object
   visualization.py  history, embedding, and loss-slice plots
@@ -145,3 +187,4 @@ examples/
 main.py              mixed-linear special-case example
 tests/               focused behavior tests
 ```
+
