@@ -8,7 +8,8 @@ from typing import Any, Mapping
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": {
-        "name": "mlp",
+        "name": "model",
+        "type": "mlp",
         "input_dim": 1,
         "output_dim": 1,
         "depth": 2,
@@ -16,7 +17,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "activation": "relu",
         "output_activation": "identity",
         "bias": True,
-        "parameter_init": {"name": "xavier_uniform"},
+        "parameter_init": {"type": "xavier_uniform"},
     },
     "training": {
         "algorithm": "sgd",
@@ -60,9 +61,36 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
     model = normalized["model"]
     training = normalized["training"]
 
+    model_override = config.get("model", {})
     model_type = str(model.get("type", "")).lower()
+    if isinstance(model_override, Mapping) and "type" not in model_override:
+        legacy_name = str(model_override.get("name", "")).lower()
+        if legacy_name in {"mlp", "mixed_linear"} or legacy_name.startswith(
+            "torchvision/"
+        ):
+            model_type = legacy_name
+        elif "name" in model_override:
+            raise ValueError(
+                "A free-form model.name requires model.type (for example, 'mlp')"
+            )
+    if isinstance(model_override, Mapping):
+        init_override = model_override.get("parameter_init")
+        if (
+            isinstance(init_override, Mapping)
+            and "type" not in init_override
+            and "name" in init_override
+        ):
+            model["parameter_init"]["type"] = init_override["name"]
     if not model_type:
-        raise ValueError("model.type is required")
+        legacy_name = str(model.get("name", "")).lower()
+        if legacy_name in {"mlp", "mixed_linear"} or legacy_name.startswith(
+            "torchvision/"
+        ):
+            model_type = legacy_name
+        else:
+            raise ValueError(
+                "model.type is required; model.name is a free-form experiment label"
+            )
     model["type"] = model_type
 
     if model_type in {"mlp", "mixed_linear"}:
@@ -88,8 +116,14 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
         perturbation.setdefault("distribution", "gaussian")
         perturbation.setdefault("samples", 1)
         perturbation.setdefault("normalized", False)
+        perturbation.setdefault("antithetic", False)
+        perturbation.setdefault("preserve_buffers", True)
         if int(perturbation["samples"]) < 1:
             raise ValueError("training.perturbation.samples must be positive")
+        if bool(perturbation["antithetic"]) and int(perturbation["samples"]) % 2:
+            raise ValueError(
+                "training.perturbation.samples must be even with antithetic sampling"
+            )
 
     return normalized
 
@@ -108,3 +142,4 @@ def training_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if "training" in config:
         return normalize_config(config)["training"]
     return normalize_config({"training": config})["training"]
+

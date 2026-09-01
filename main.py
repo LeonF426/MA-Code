@@ -29,7 +29,7 @@ CONFIG = {
         "output_activation": "sigmoid",
         "output_reduction": "sum",
         "bias": False,
-        "parameter_init": {"name": "uniform", "low": -0.5, "high": 0.5},
+        "parameter_init": {"type": "uniform", "low": -0.5, "high": 0.5},
     },
     "data": {
         "name": "linear_regression",
@@ -85,3 +85,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

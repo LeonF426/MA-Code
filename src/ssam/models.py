@@ -162,7 +162,10 @@ def _initialize_tensor(tensor: torch.Tensor, name: str, options: Mapping[str, An
 
 def initialize_model(model: nn.Module, initialization: str | Mapping[str, Any]) -> None:
     options = {"name": initialization} if isinstance(initialization, str) else dict(initialization)
-    name = str(options.pop("type", "default")).lower()
+    init_type = options.pop("type", None)
+    if init_type is None:
+        init_type = options.pop("name", "default")
+    name = str(init_type).lower()
     if name == "pretrained":
         return
     for module in model.modules():
@@ -180,11 +183,15 @@ def _build_torchvision_model(config: Mapping[str, Any]) -> nn.Module:
             "Torchvision benchmarks require `pip install -e '.[benchmarks]'`."
         ) from exc
 
-    model_name = str(config["name"]).split("/", 1)[1]
+    model_name = str(config["type"]).split("/", 1)[1]
     if not hasattr(models, model_name):
         raise ValueError(f"Unknown torchvision model {model_name!r}")
-    init_config = config.get("parameter_init", {"name": "default"})
-    init_name = init_config if isinstance(init_config, str) else init_config.get("name", "default")
+    init_config = config.get("parameter_init", {"type": "default"})
+    init_name = (
+        init_config
+        if isinstance(init_config, str)
+        else init_config.get("type", init_config.get("name", "default"))
+    )
     pretrained = str(init_name).lower() == "pretrained"
     model = getattr(models, model_name)(weights="DEFAULT" if pretrained else None)
     num_classes = int(config.get("num_classes", 1000))
@@ -223,5 +230,6 @@ def build_model(config: Mapping[str, Any]) -> nn.Module:
         default_bias=bool(resolved.get("bias", True)),
         output_reduction=str(resolved.get("output_reduction", "none")),
     )
-    initialize_model(model, resolved.get("parameter_init", {"name": "default"}))
+    initialize_model(model, resolved.get("parameter_init", {"type": "default"}))
     return model
+

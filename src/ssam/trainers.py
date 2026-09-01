@@ -7,13 +7,12 @@ from dataclasses import dataclass, field
 import math
 from typing import Any
 
-import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from .config import training_config
-from .schedules import build_schedule, strong_descent_diag
+from .schedules import build_learning_rate_policy, build_schedule
 from .update_rules import build_update_rule
 
 
@@ -25,14 +24,16 @@ class TrainingResult:
     """Training outputs kept small enough for plotting and notebook use."""
 
     model: nn.Module
-    history: dict[str, list[float | int]]
+    history: dict[str, list[Any]]
     parameter_snapshots: list[torch.Tensor] = field(default_factory=list)
     snapshot_losses: list[float] = field(default_factory=list)
     config: dict[str, Any] = field(default_factory=dict)
 
 
 def _loss_from_name(name: str) -> LossFunction:
-    def align_scalar_output(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def align_scalar_output(
+        predictions: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
         if predictions.ndim == targets.ndim + 1 and predictions.shape[-1] == 1:
             return predictions.squeeze(-1)
         return predictions
@@ -42,8 +43,10 @@ def _loss_from_name(name: str) -> LossFunction:
             align_scalar_output(predictions, targets), targets
         ),
         "cross_entropy": nn.CrossEntropyLoss(),
-        "bce_logits": lambda predictions, targets: nn.functional.binary_cross_entropy_with_logits(
-            align_scalar_output(predictions, targets), targets
+        "bce_logits": lambda predictions, targets: (
+            nn.functional.binary_cross_entropy_with_logits(
+                align_scalar_output(predictions, targets), targets
+            )
         ),
         "l1": lambda predictions, targets: nn.functional.l1_loss(
             align_scalar_output(predictions, targets), targets
@@ -61,7 +64,9 @@ def _device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def _as_dataset(data: Dataset | DataLoader | tuple[torch.Tensor, torch.Tensor]) -> Dataset:
+def _as_dataset(
+    data: Dataset | DataLoader | tuple[torch.Tensor, torch.Tensor],
+) -> Dataset:
     if isinstance(data, DataLoader):
         return data.dataset
     if isinstance(data, tuple) and len(data) == 2:
@@ -89,7 +94,59 @@ def _make_loader(
 
 
 def flatten_parameters(model: nn.Module) -> torch.Tensor:
-    return torch.cat([parameter.detach().reshape(-1).cpu() for parameter in model.parameters()])
+    return torch.cat(
+        [parameter.detach().reshape(-1).cpu() for parameter in model.parameters()]
+    )
+
+
+def _inferred_policy_shape(
+    model: nn.Module, config: Mapping[str, Any]
+) -> tuple[int, int]:
+    """Infer practical defaults when theorem constants are not configured."""
+
+    model_section = config.get("model", {})
+    dimension = int(
+        model_section.get(
+            "input_dim",
+            sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad),
+        )
+    )
+    if hasattr(model, "layers"):
+        depth = len(model.layers)
+    else:
+        depth = sum(
+            1
+            for module in model.modules()
+            if module is not model
+            and any(parameter.requires_grad for parameter in module.parameters(recurse=False))
+        )
+    return max(1, dimension), max(1, depth)
+
+
+def _layer_balancedness(model: nn.Module) -> list[float]:
+    """Return adjacent-layer Gram-matrix discrepancies where shapes permit."""
+
+    layers = getattr(model, "layers", None)
+    if layers is None:
+        return []
+
+    values: list[float] = []
+    for current, following in zip(layers, layers[1:]):
+        if not hasattr(current, "weight") or not hasattr(following, "weight"):
+            continue
+        current_weight = current.weight.detach()
+        following_weight = following.weight.detach()
+        if current_weight.ndim == 1:
+            current_weight = torch.diag(current_weight)
+        if following_weight.ndim == 1:
+            following_weight = torch.diag(following_weight)
+        left = following_weight.T @ following_weight
+        right = current_weight @ current_weight.T
+        if left.shape != right.shape:
+            values.append(float("nan"))
+        else:
+            values.append(float(torch.linalg.matrix_norm(left - right).item()))
+    return values
 
 
 def train(
@@ -99,10 +156,11 @@ def train(
     loss_fn: LossFunction | None = None,
     callbacks: list[Callable[[int, nn.Module, dict[str, Any]], None]] | None = None,
 ) -> TrainingResult:
-    """Train a model using the algorithm selected in the input dictionary.
+    """Train using the algorithm and schedules selected in the dictionary.
 
-    ``gd`` uses one full-dataset batch, ``sgd`` uses mini-batches, and ``s_sam``
-    uses the same mini-batches with gradients evaluated at random perturbations.
+    ``gd`` always uses the complete dataset. ``sgd`` and ``s_sam`` use the given
+    mini-batch size, which naturally becomes full-batch when it equals the dataset
+    size. S-SAM estimates its regularized objective and gradient together.
     """
 
     resolved = training_config(config)
@@ -112,30 +170,31 @@ def train(
     loader = _make_loader(data, resolved)
     loss_function = loss_fn or _loss_from_name(str(resolved.get("loss", "mse")))
 
-    if config["training"]["learning_rate"]["name"] == "strong_descent_diag":
-        learning_rate = strong_descent_diag(
-            dimension=config["model"]["input_dim"],
-            depth=len(config["model"]["layers"]),
-            delta=config["training"]["learning_rate"]["delta"],
-            safety= config["training"]["learning_rate"]["safety"],
-            max_lr=config["training"]["learning_rate"]["max_lr"]
+    dimension, depth = _inferred_policy_shape(model, config)
+    learning_rate_policy = build_learning_rate_policy(
+        resolved["learning_rate"],
+        default_dimension=dimension,
+        default_depth=depth,
+    )
+    if learning_rate_policy.requires_regularized_loss and resolved["algorithm"] != "s_sam":
+        raise ValueError(
+            f"Learning-rate policy {learning_rate_policy.name!r} requires algorithm "
+            "'s_sam' so its objective estimate and gradient can share samples"
         )
-    else:
-        learning_rate = build_schedule(resolved["learning_rate"])
-    print("building schedule worked")
-
     sharpness = build_schedule(resolved.get("sharpness_scale", 0.0))
     update_rule = build_update_rule(model, resolved)
     callbacks = callbacks or []
     checkpoint_every = int(resolved.get("checkpoint_every", 0))
 
-    history: dict[str, list[float | int | list]] = {
+    history: dict[str, list[Any]] = {
         "step": [],
         "epoch": [],
         "loss": [],
+        "clean_loss": [],
+        "regularized_loss": [],
         "learning_rate": [],
         "sharpness_scale": [],
-        "layer_balance": []
+        "layer_balance": [],
     }
     result = TrainingResult(model=model, history=history, config=resolved)
     if checkpoint_every:
@@ -148,8 +207,12 @@ def train(
         if target_steps
         else int(resolved.get("epochs", 1))
     )
-    print(f"Training {config["model"]["name"]} of type '{config["model"]["type"]}'")
-    print(f"Learning rate schedule: {config["training"]["learning_rate"]["name"]}")
+    model_section = config.get("model", {})
+    model_name = model_section.get("name", model.__class__.__name__)
+    model_type = model_section.get("type", model.__class__.__name__)
+    print(f"Training {model_name} of type {model_type!r}")
+    print(f"Learning rate policy: {learning_rate_policy.name}")
+
     step = 0
     stop = False
     for epoch in range(epochs):
@@ -157,59 +220,34 @@ def train(
             inputs, targets = inputs.to(device), targets.to(device)
             scale = float(sharpness(step))
 
-            if config["training"]["learning_rate"]["name"] == "strong_descent_diag":
-                with torch.no_grad():
-                    #TODO: complete this part. The regularized_objective() function is not yet written and shall be
-                    #   replaced by an efficient MonteCarlo approximation of the regularized loss at the current parameter configuration.
-                    reg_loss_value = regularized_objective()
-
-                    lr = learning_rate(step,scale,reg_loss_value)
-            else:
-                lr = float(learning_rate(step))
-
-
-            for group in update_rule.optimizer.param_groups:
-                group["lr"] = lr
-
             def closure() -> torch.Tensor:
                 return loss_function(model(inputs), targets)
 
-            loss = update_rule.step(closure, scale)
-
-            #TODO: extract layer-imbalance in each iteration.
-            layer_balance = []
-
-            for i in range(len(config["model"]["layers"])-1):
-
-                m_1 = model.layers[i + 1].weight.detach()
-                m_2 = model.layers[i].weight.detach()
-
-                if config["model"]["layers"][i+1]["type"] == "diag":
-                    m_1 = np.diag(m_1)
-                if config["model"]["layers"][i]["type"] == "diag":
-                    m_2 = np.diag(m_2)
-
-                b = np.linalg.norm(
-                    (
-                        m_1.transpose(0,1) @ m_1 - m_2 @ m_2.transpose(0,1)
-                    )
-                    ,'fro')
-                layer_balance.append(b)
-
-            record = {
+            outcome = update_rule.step(
+                closure,
+                scale,
+                step_index=step,
+                learning_rate_policy=learning_rate_policy,
+            )
+            record: dict[str, Any] = {
                 "step": step,
                 "epoch": epoch,
-                "loss": loss,
-                "learning_rate": lr,
+                "loss": outcome.loss,
+                "clean_loss": outcome.clean_loss,
+                "regularized_loss": (
+                    float("nan")
+                    if outcome.regularized_loss is None
+                    else outcome.regularized_loss
+                ),
+                "learning_rate": outcome.learning_rate,
                 "sharpness_scale": scale,
-                "layer_balance": layer_balance
+                "layer_balance": _layer_balancedness(model),
             }
-
             for key, value in record.items():
                 history[key].append(value)
             if checkpoint_every and (step + 1) % checkpoint_every == 0:
                 result.parameter_snapshots.append(flatten_parameters(model))
-                result.snapshot_losses.append(loss)
+                result.snapshot_losses.append(outcome.loss)
             for callback in callbacks:
                 callback(step, model, record)
 
@@ -220,4 +258,8 @@ def train(
         if stop:
             break
 
+    if checkpoint_every and step and step % checkpoint_every:
+        result.parameter_snapshots.append(flatten_parameters(model))
+        result.snapshot_losses.append(float(history["loss"][-1]))
     return result
+
