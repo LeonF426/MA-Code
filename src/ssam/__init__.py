@@ -14,8 +14,6 @@ from .schedules import (
 from .trainers import TrainingResult, train
 from .update_rules import UpdateResult, register_update_rule
 from .visualization import (
-    plot_checkpoint_embedding,
-    plot_loss_landscape,
     plot_training_history,
 )
 
@@ -34,8 +32,6 @@ __all__ = [
     "estimate_regularized_objective",
     "make_linear_regression_dataset",
     "normalize_config",
-    "plot_checkpoint_embedding",
-    "plot_loss_landscape",
     "plot_training_history",
     "register_activation",
     "register_schedule",

@@ -185,6 +185,10 @@ def build_learning_rate_policy(
     else:
         name = "constant"
 
+    if name == "tamed":
+         t = config["inserted_lr"].get("name", "constant")
+
+
     if name == "strong_descent_diag":
         if not isinstance(config, Mapping):
             raise TypeError("strong_descent_diag requires a configuration dictionary")
