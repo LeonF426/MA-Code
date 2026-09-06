@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 visualization = ["matplotlib>=3.8", "scikit-learn>=1.4"]
 benchmarks = ["torchvision>=0.17"]
+tabular = ["scikit-learn>=1.4"]
 dev = ["pytest>=8", "matplotlib>=3.8", "scikit-learn>=1.4", "torchvision>=0.17"]
 
 [tool.setuptools.packages.find]
@@ -25,3 +26,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+

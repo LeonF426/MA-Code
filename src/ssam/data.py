@@ -10,6 +10,18 @@ import torch
 from torch.utils.data import Dataset, TensorDataset
 
 
+CALIFORNIA_HOUSING_FEATURES = (
+    "MedInc",
+    "HouseAge",
+    "AveRooms",
+    "AveBedrms",
+    "Population",
+    "AveOccup",
+    "Latitude",
+    "Longitude",
+)
+
+
 def make_linear_regression_dataset(
     n_samples: int,
     input_dim: int,
@@ -34,8 +46,95 @@ def make_linear_regression_dataset(
     return TensorDataset(inputs, targets)
 
 
+def prepare_california_housing_data(
+    features: Any,
+    targets: Any,
+    *,
+    train: bool = True,
+    test_fraction: float = 0.2,
+    seed: int = 0,
+    standardize: bool = True,
+    standardize_target: bool = False,
+) -> TensorDataset:
+    """Split and process California Housing arrays without data leakage.
+
+    The split is deterministic. Feature and target statistics are always fitted on
+    the training partition, including when the test partition is requested.
+    """
+
+    inputs = torch.as_tensor(features, dtype=torch.float32).clone()
+    labels = torch.as_tensor(targets, dtype=torch.float32).reshape(-1).clone()
+    if inputs.ndim != 2 or inputs.shape[1] != len(CALIFORNIA_HOUSING_FEATURES):
+        raise ValueError(
+            "California Housing features must have shape [n_samples, 8]"
+        )
+    if labels.shape[0] != inputs.shape[0]:
+        raise ValueError("Features and targets must contain the same number of samples")
+    if not 0.0 < test_fraction < 1.0:
+        raise ValueError("test_fraction must be in (0, 1)")
+    if inputs.shape[0] < 2:
+        raise ValueError("At least two samples are required for a train/test split")
+
+    generator = torch.Generator().manual_seed(seed)
+    permutation = torch.randperm(inputs.shape[0], generator=generator)
+    test_count = max(1, int(round(test_fraction * inputs.shape[0])))
+    test_count = min(test_count, inputs.shape[0] - 1)
+    test_indices = permutation[:test_count]
+    train_indices = permutation[test_count:]
+
+    if standardize:
+        feature_mean = inputs[train_indices].mean(dim=0)
+        feature_std = inputs[train_indices].std(dim=0, unbiased=False).clamp_min(1e-12)
+        inputs = (inputs - feature_mean) / feature_std
+    if standardize_target:
+        target_mean = labels[train_indices].mean()
+        target_std = labels[train_indices].std(unbiased=False).clamp_min(1e-12)
+        labels = (labels - target_mean) / target_std
+
+    selected = train_indices if train else test_indices
+    return TensorDataset(inputs[selected], labels[selected])
+
+
+def make_california_housing_dataset(
+    *,
+    root: str | Path = "data",
+    train: bool = True,
+    test_fraction: float = 0.2,
+    seed: int = 0,
+    standardize: bool = True,
+    standardize_target: bool = False,
+    download: bool = True,
+) -> TensorDataset:
+    """Load sklearn's California Housing regression benchmark as tensors.
+
+    The first call downloads approximately 1.5 MB when ``download=True``;
+    subsequent calls use sklearn's cache under ``root``.
+    """
+
+    try:
+        from sklearn.datasets import fetch_california_housing
+    except ImportError as exc:
+        raise ImportError(
+            "California Housing requires `pip install -e '.[tabular]'`."
+        ) from exc
+
+    bunch = fetch_california_housing(
+        data_home=str(Path(root)),
+        download_if_missing=download,
+    )
+    return prepare_california_housing_data(
+        bunch.data,
+        bunch.target,
+        train=train,
+        test_fraction=test_fraction,
+        seed=seed,
+        standardize=standardize,
+        standardize_target=standardize_target,
+    )
+
+
 def build_dataset(config: Mapping[str, Any], train: bool = True) -> Dataset:
-    """Build a synthetic dataset or a torchvision benchmark from a dictionary."""
+    """Build a synthetic, tabular, or torchvision dataset from a dictionary."""
 
     name = str(config.get("name", "linear_regression")).lower()
     if name == "linear_regression":
@@ -46,6 +145,18 @@ def build_dataset(config: Mapping[str, Any], train: bool = True) -> Dataset:
             noise_std=float(config.get("noise_std", 0.0)),
             seed=int(config.get("seed", 0)) + (0 if train else 1),
         )
+    if name in {"california_housing", "california"}:
+        return make_california_housing_dataset(
+            root=Path(config.get("root", "data")),
+            train=train,
+            test_fraction=float(
+                config.get("test_fraction", config.get("test_size", 0.2))
+            ),
+            seed=int(config.get("seed", 0)),
+            standardize=bool(config.get("standardize", True)),
+            standardize_target=bool(config.get("standardize_target", False)),
+            download=bool(config.get("download", True)),
+        )
 
     torchvision_names = {
         "mnist": "MNIST",
@@ -55,7 +166,8 @@ def build_dataset(config: Mapping[str, Any], train: bool = True) -> Dataset:
     }
     if name not in torchvision_names:
         raise ValueError(
-            f"Unknown dataset {name!r}. Available: linear_regression, {sorted(torchvision_names)}"
+            f"Unknown dataset {name!r}. Available: linear_regression, "
+            f"california_housing, {sorted(torchvision_names)}"
         )
     try:
         from torchvision import datasets, transforms
@@ -77,3 +189,4 @@ def build_dataset(config: Mapping[str, Any], train: bool = True) -> Dataset:
         download=bool(config.get("download", False)),
         transform=transforms.Compose(transform_steps),
     )
+
