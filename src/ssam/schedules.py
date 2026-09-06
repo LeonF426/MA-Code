@@ -87,26 +87,41 @@ def build_schedule(config: float | int | Mapping[str, Any]) -> Schedule:
     except KeyError as exc:
         raise ValueError(f"Unknown schedule {name!r}. Available: {sorted(_SCHEDULES)}") from exc
 
-
 @dataclass(frozen=True)
 class LearningRatePolicy:
-    """Uniform interface for static and objective-dependent learning rates."""
+    """Uniform interface for static and state-dependent learning rates.
+
+    ``batch_size`` is configuration metadata for the training loop.  The policy
+    does not draw samples or form stochastic gradients itself.
+    """
 
     name: str
     requires_regularized_loss: bool
     function: LearningRateFunction
+    requires_gradient_norm: bool = False
+    update_type: str = "gd"
 
     def __call__(
         self,
         step: int,
         sharpness_scale: float,
         regularized_loss: float | None = None,
+        gradient_norm: float | None = None,
     ) -> float:
         if self.requires_regularized_loss and regularized_loss is None:
             raise ValueError(
                 f"Learning-rate policy {self.name!r} requires a regularized-loss estimate"
             )
-        value = float(self.function(step, sharpness_scale, regularized_loss))
+        if self.requires_gradient_norm and gradient_norm is None:
+            raise ValueError(
+                f"Learning-rate policy {self.name!r} requires the gradient norm"
+            )
+        if self.requires_gradient_norm:
+            value = float(
+                self.function(step, sharpness_scale, regularized_loss, gradient_norm)
+            )
+        else:
+            value = float(self.function(step, sharpness_scale, regularized_loss))
         if not math.isfinite(value) or value < 0.0:
             raise FloatingPointError(f"Learning-rate policy returned invalid value {value}")
         return value
@@ -172,13 +187,68 @@ def strong_descent_diag(
     return policy
 
 
+def _build_tamed_policy(
+    config: Mapping[str, Any],
+    *,
+    default_dimension: int | None,
+    default_depth: int | None,
+) -> LearningRatePolicy:
+    """Wrap a base policy with alpha -> alpha / (1 + alpha * ||g||)."""
+
+    if "inserted_lr" not in config:
+        raise ValueError("tamed requires an 'inserted_lr' configuration")
+
+    update_type = str(config.get("type", "gd")).lower()
+    if update_type not in {"gd", "sgd"}:
+        raise ValueError("tamed.type must be either 'gd' or 'sgd'")
+
+    inserted = build_learning_rate_policy(
+        config["inserted_lr"],
+        default_dimension=default_dimension,
+        default_depth=default_depth,
+    )
+    if inserted.requires_gradient_norm:
+        raise ValueError("A tamed policy cannot wrap another gradient-norm policy")
+
+    def function(
+        step: int,
+        sharpness_scale: float,
+        regularized_loss: float | None,
+        gradient_norm: float | None,
+    ) -> float:
+        if gradient_norm is None:
+            raise ValueError("tamed requires the norm of the gradient estimate")
+        norm = float(gradient_norm)
+        if not math.isfinite(norm) or norm < 0.0:
+            raise ValueError(
+                f"gradient_norm must be non-negative and finite, received {norm}"
+            )
+
+        alpha = inserted(step, sharpness_scale, regularized_loss)
+        if alpha == 0.0:
+            return 0.0
+        return alpha / (1.0 + alpha * norm)
+
+    return LearningRatePolicy(
+        name="tamed",
+        requires_regularized_loss=inserted.requires_regularized_loss,
+        function=function,
+        requires_gradient_norm=True,
+        update_type=update_type
+    )
+
+
 def build_learning_rate_policy(
     config: float | int | Mapping[str, Any],
     *,
     default_dimension: int | None = None,
     default_depth: int | None = None,
 ) -> LearningRatePolicy:
-    """Build a learning-rate policy with one uniform three-argument interface."""
+    """Build a learning-rate policy with one uniform call interface.
+
+    Non-tamed policies accept the historical three arguments.  A tamed policy
+    additionally requires ``gradient_norm`` as the fourth argument.
+    """
 
     if isinstance(config, Mapping):
         name = str(config.get("name", "constant")).lower()
@@ -186,8 +256,13 @@ def build_learning_rate_policy(
         name = "constant"
 
     if name == "tamed":
-         t = config["inserted_lr"].get("name", "constant")
-
+        if not isinstance(config, Mapping):  # Kept for type narrowing/readability.
+            raise TypeError("tamed requires a configuration dictionary")
+        return _build_tamed_policy(
+            config,
+            default_dimension=default_dimension,
+            default_depth=default_depth,
+        )
 
     if name == "strong_descent_diag":
         if not isinstance(config, Mapping):

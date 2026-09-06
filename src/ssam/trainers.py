@@ -162,8 +162,11 @@ def train(
     mini-batch size, which naturally becomes full-batch when it equals the dataset
     size. S-SAM estimates its regularized objective and gradient together.
     """
-
+    
+    # load traning config from CONFIG dict
     resolved = training_config(config)
+
+    # Set rng seed (for a bit control and comparability)
     torch.manual_seed(int(resolved.get("seed", 0)))
     device = _device(str(resolved.get("device", "auto")))
     model.to(device)
@@ -171,6 +174,8 @@ def train(
     loss_function = loss_fn or _loss_from_name(str(resolved.get("loss", "mse")))
 
     dimension, depth = _inferred_policy_shape(model, config)
+
+    # get the learning rate sequence
     learning_rate_policy = build_learning_rate_policy(
         resolved["learning_rate"],
         default_dimension=dimension,

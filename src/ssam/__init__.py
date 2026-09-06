@@ -16,6 +16,7 @@ from .update_rules import UpdateResult, register_update_rule
 from .visualization import (
     plot_training_history,
 )
+from .average_sharpness import evaluate_average_sharpness
 
 __all__ = [
     "DEFAULT_CONFIG",
