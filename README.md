@@ -20,6 +20,13 @@ python -m pip install -e ".[visualization,benchmarks]"
 python examples/benchmark_cifar10.py
 ```
 
+For the California Housing regression benchmark, install the tabular extra:
+
+```bash
+python -m pip install -e ".[tabular]"
+python examples/california_housing.py --algorithms sgd s_sam --model mlp
+```
+
 ## One dictionary controls an experiment
 
 ```python
@@ -170,6 +177,35 @@ full-batch GD and multi-sample S-SAM can be prohibitively expensive. Mini-batch 
 or one-sample normalized S-SAM is the sensible benchmark default, while checkpoint
 PCA/t-SNE is cheaper than a dense loss-surface grid.
 
+### California Housing
+
+California Housing is available through the same dataset dictionary:
+
+```python
+data_config = {
+    "name": "california_housing",
+    "root": "data",
+    "test_fraction": 0.2,
+    "standardize": True,
+    "standardize_target": False,
+    "download": True,
+    "seed": 7,
+}
+
+training_data = build_dataset(data_config, train=True)
+test_data = build_dataset(data_config, train=False)
+```
+
+The dataset has 20,640 observations and eight numerical input features. Targets
+remain in the original scikit-learn unit of $100,000 by default. Splitting is
+deterministic, and all normalization statistics are fitted only on the training
+partition, so the test set does not leak information into training.
+
+[`examples/california_housing.py`](examples/california_housing.py) supports a
+single linear layer or a small MLP and any selection of `gd`, `sgd`, and `s_sam`.
+It gives every algorithm the same parameter initialization, evaluates held-out
+MSE, RMSE, MAE, and R², and writes JSON metrics plus training-history plots.
+
 ## Repository layout
 
 ```text
@@ -184,7 +220,9 @@ src/ssam/
   visualization.py  history, embedding, and loss-slice plots
 examples/
   benchmark_cifar10.py
+  california_housing.py
 main.py              mixed-linear special-case example
 tests/               focused behavior tests
 ```
+
 
