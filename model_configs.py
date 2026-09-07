@@ -1,58 +1,59 @@
 seed = None
 
-CONFIG = {
+BASE_CONFIG = {
     "model": {
-        "name": "3L_2d_linear_inv_eta",
-        "type": "mlp",
-        "input_dim": 2,
-        "layers": [
-            {"type": "dense", "in_dim": 2, "out_dim": 4},
-            {"type": "dense", "in_dim": 4, "out_dim": 3},
-            {"type": "dense", "in_dim": 3, "out_dim": 2}
-        ],
+        "name": "california_diag",
+        "type": "mixed_linear",
+        "input_dim": 8,
+        "layers": [],  # filled separately for every depth
         "activation": "identity",
         "output_activation": "identity",
         "output_reduction": "sum",
         "bias": False,
-        "parameter_init": {"type": "uniform", "low": -0.5, "high": 0.5},
+        "parameter_init": {
+            "type": "identity",
+            "bias": 0.0,
+        },
     },
     "data": {
-        "name": "linear_regression",
-        "n_samples": 40,
-        "input_dim": 2,
-        "target_weights": [3.14159, -1.0],
-        "noise_std": 0.05,
-        "seed": seed ,
+        "name": "california_housing",
+        "root": "data",
+        "test_fraction": 0.2,
+        "standardize": True,
+        "standardize_target": False,
+        "download": True,
+        "seed": 7,
     },
     "training": {
-        "algorithm": "s_sam",  # change to "gd" or "sgd"
+        "algorithm": "sgd",  # replaced for every run
         "steps": 500,
-        "batch_size": 40,
-        #"learning_rate": {"name": "constant", "value": 0.01},
+        "batch_size": 256,
         "learning_rate": {
-            "name": "strong_descent_diag",
-            "delta": 0.5,
-            "safety": 0.95,
-            "max_lr": 0.1,
-            "loss_floor": 1e-12,
+            "name": "tamed",
+            "type": "sgd",
+            "inserted_lr": {
+                "name": "constant",
+                "value": 0.1,
+            },
         },
-        "learning_rate": {"name": "tamed",
-                          "type": "sgd",
-                          "inserted_lr":{
-            "name": "strong_descent_diag",
-            "delta": 0.5,
-            "safety": 0.95,
-            "max_lr": 0.1,
-            "loss_floor": 1e-12,
-        }
-                          },
-        #"sharpness_scale": {"name": "constant", "value": 1},
-        "sharpness_scale": {"name": "inverse_time","initial": 1,"power": 0.5,"floor": 0.05,},
-        "perturbation": {"distribution": "gaussian", "samples": 100},
-        "optimizer": {"name": "sgd", "momentum": 0.0},
+        "sharpness_scale": {
+            "name": "constant",
+            "value": 0.05,
+        },
+        "perturbation": {
+            "distribution": "gaussian",
+            "samples": 8,
+            "normalized": True,
+            "antithetic": True,
+        },
+        "optimizer": {
+            "name": "sgd",
+            "momentum": 0.0,
+        },
         "loss": "mse",
-        "checkpoint_every": 1000,
-        "seed": seed,
+        "checkpoint_every": 0,
         "device": "auto",
     },
 }
+
+
