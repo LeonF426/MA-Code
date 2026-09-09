@@ -396,6 +396,7 @@ class StochasticSharpnessUpdate:
                 # This is a perturbed evaluation of the loss. Calling backward
                 # produces a sample of the regularized-objective gradient.
                 loss = loss_closure()
+                print(f"evaluated loss in SSAM update: {loss.item()}")
 
                 if loss.numel() != 1:
                     raise ValueError(
@@ -446,6 +447,7 @@ class StochasticSharpnessUpdate:
                 mean_loss += (
                     loss_value - mean_loss
                 ) * mean_weight
+                print(f"Mean loss : {mean_loss}")
 
         except Exception:
             self.optimizer.zero_grad(set_to_none=True)

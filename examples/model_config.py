@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from ssam import build_dataset, build_model, plot_training_history, train
 
+SEED = 100
 
 BASE_CONFIG = {
     "model": {
@@ -49,7 +50,7 @@ BASE_CONFIG = {
                 "value": 0.1,
             },
         },
-        "sharpness_scale": {"name": "inverse_time","initial": 2,"power": 0.25,"floor": 0.0,},
+        "sharpness_scale": {"name": "inverse_time","initial": 2,"power": 0.25,"floor": 0.0},
         "perturbation": {
             "distribution": "gaussian",
             "samples": 8,

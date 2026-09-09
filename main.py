@@ -14,23 +14,23 @@ from ssam import (
     evaluate_average_sharpness
 )
 
-seed = 12
+seed = 125
 
 CONFIG_1 = {
     "model": {
-        "name": "3L_2d_diag_linear_ssam",
+        "name": "3L_2d_linear",
         "type": "mixed_linear",
         "input_dim": 2,
         "layers": [
-            {"type": "dense", "in_dim": 2, "out_dim": 2},
-            {"type": "dense", "in_dim": 2, "out_dim": 2},
-            {"type": "dense", "in_dim": 2, "out_dim": 2}
+            {"type": "dense", "in_dim": 2, "out_dim": 3},
+            {"type": "dense", "in_dim": 3, "out_dim": 4},
+            {"type": "dense", "in_dim": 4, "out_dim": 2}
         ],
         "activation": "identity",
         "output_activation": "identity",
         "output_reduction": "sum",
         "bias": False,
-        "parameter_init": {"type": "uniform", "low": -0.5, "high": 0.5},
+        "parameter_init": {"type": "ones"},
     },
     "data": {
         "name": "linear_regression",
@@ -58,8 +58,8 @@ CONFIG_1 = {
                           "name": "constant", "value": 0.1
         }
                           },
-        #"sharpness_scale": {"name": "constant", "value": 1},
-        "sharpness_scale": {"name": "inverse_time","initial": 2,"power": 0.25,"floor": 0.0,},
+        "sharpness_scale": {"name": "constant", "value": 1},
+        #"sharpness_scale": {"name": "inverse_time","initial": 2,"power": 0.25,"floor": 0.0,},
         "perturbation": {"distribution": "gaussian", "samples": 50},
         "optimizer": {"name": "sgd", "momentum": 0.0},
         "loss": "mse",
@@ -97,6 +97,39 @@ def main() -> None:
         model_2.parameters(),
     ):
         torch.testing.assert_close(parameter_1, parameter_2)
+
+
+    # ---------------------------------------------------------------
+    # Average-sharpness evaluation for initial parameters
+    # ---------------------------------------------------------------
+    evaluation_loader = DataLoader(
+        dataset,
+        batch_size=len(dataset),  # Full dataset; use less if memory requires it.
+        shuffle=False,
+        drop_last=False,
+    )
+
+    evaluation_loss = torch.nn.MSELoss()
+
+    # This is the radius at which sharpness is compared. It should be identical
+    # for every trained model and does not need to equal the final training eta.
+    evaluation_scale = 3
+
+    # Use many perturbations for an accurate estimate.
+    evaluation_samples = 4096
+    evaluation_seed = 12345
+
+    sharpness_1 = evaluate_average_sharpness(
+        model_1,  # Equivalent to using model_1.
+        evaluation_loader,
+        evaluation_loss,
+        sharpness_scale=evaluation_scale,
+        samples=evaluation_samples,
+        seed=evaluation_seed,
+        antithetic=True,
+    )
+    print(sharpness_1)
+
 
     # The two separate model objects now start identically.
     result_1 = train(model_1, dataset, CONFIG_1)
@@ -164,13 +197,13 @@ def main() -> None:
     plot_training_history(
         result_1,
         output_dir
-        / f"{CONFIG_1['model']['name']}_{CONFIG_1['training']['algorithm']}.png",
+        / f"{CONFIG_1['model']['name']}_{CONFIG_1['training']['algorithm']}_{CONFIG_1['training']['learning_rate']['name']}.png",
     )
 
     plot_training_history(
         result_2,
         output_dir
-        / f"{CONFIG_2['model']['name']}_{CONFIG_2['training']['algorithm']}.png",
+        / f"{CONFIG_2['model']['name']}_{CONFIG_2['training']['algorithm']}_{CONFIG_2['training']['learning_rate']['name']}.png",
     )
 
 

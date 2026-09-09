@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from ssam import build_dataset, build_model, plot_training_history, train
-from model_config import BASE_CONFIG, config_for, parse_args, model_config
+from model_config import BASE_CONFIG,SEED,  config_for, parse_args, model_config
 
 
 def regression_metrics(
@@ -157,12 +157,11 @@ def main() -> None:
     results = {}
 
 
-    torch.manual_seed(BASE_CONFIG["seed"])
+    torch.manual_seed(SEED)
 
     for depth in DEPTHS:
         reference_config = config_for(depth, "sgd")
 
-        torch.manual_seed(BASE_CONFIG["training"]["seed"])
         reference_model = build_model(reference_config)
         initial_state = copy.deepcopy(reference_model.state_dict())
 
