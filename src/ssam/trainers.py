@@ -234,6 +234,14 @@ def train(
                 step_index=step,
                 learning_rate_policy=learning_rate_policy,
             )
+            if step == 0:
+                print("Resolved algorithm:", resolved["algorithm"])
+                print("Update rule:", type(update_rule).__name__)
+                print("Loss:", outcome.loss)
+                print("Clean loss:", outcome.clean_loss)
+                print("Raw regularized loss:", outcome.regularized_loss)
+
+
             record: dict[str, Any] = {
                 "step": step,
                 "epoch": epoch,

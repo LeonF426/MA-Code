@@ -179,17 +179,17 @@ def main() -> None:
             results[(depth, algorithm)] = result
 
 
-        train_scores = regression_metrics(result.model, training_data)
-        test_scores = regression_metrics(result.model, test_data)
-        plot_training_history(
-            result,
-            output_dir / f"{model}_{algorithm}_history.png",
-        )
-        print(
-            f"{algorithm:>5} | test RMSE={test_scores['rmse']:.4f} "
-            f"(${test_scores['rmse'] * 100_000:,.0f}) | "
-            f"MAE={test_scores['mae']:.4f} | R2={test_scores['r2']:.4f}"
-        )
+            train_scores = regression_metrics(result.model, training_data)
+            test_scores = regression_metrics(result.model, test_data)
+            plot_training_history(
+                result,
+                output_dir / f"{config['model']['name']}_{algorithm}_history.png",
+            )
+            print(
+                f"{algorithm:>5} | test RMSE={test_scores['rmse']:.4f} "
+                f"(${test_scores['rmse'] * 100_000:,.0f}) | "
+                f"MAE={test_scores['mae']:.4f} | R2={test_scores['r2']:.4f}"
+            )
 
 
 if __name__ == "__main__":
