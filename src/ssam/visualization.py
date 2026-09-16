@@ -61,6 +61,7 @@ def plot_training_history(
                 axis.legend()
         elif key == "loss" and "clean_loss" in history:
             axis.plot(steps, history["clean_loss"], label="clean")
+            axis.set_ylim([0,10])
             regularized = np.asarray(history.get("regularized_loss", []), dtype=float)
             if regularized.size and np.isfinite(regularized).any():
                 axis.plot(steps, regularized, label="regularized estimate", alpha=0.8)

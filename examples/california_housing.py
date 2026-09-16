@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from ssam import build_dataset, build_model, plot_training_history, train
-from model_config import BASE_CONFIG,SEED,  config_for, parse_args, model_config
+from model_config import BASE_CONFIG, BASE_CONFIG_DENSE,SEED,  config_for, parse_args, model_config
 
 
 def regression_metrics(
@@ -166,6 +166,7 @@ def main() -> None:
         initial_state = copy.deepcopy(reference_model.state_dict())
 
         for algorithm in ALGORITHMS:
+            print("----------------------------Next Model----------------------------------")
             config = config_for(depth, algorithm)
             model = build_model(config)
             model.load_state_dict(initial_state, strict=True)
@@ -190,6 +191,51 @@ def main() -> None:
                 f"(${test_scores['rmse'] * 100_000:,.0f}) | "
                 f"MAE={test_scores['mae']:.4f} | R2={test_scores['r2']:.4f}"
             )
+
+    # Compare with fully connected linear:
+    print("----------------------------Next Model----------------------------------")
+    model_sgd = build_model(BASE_CONFIG_DENSE)
+    result_sgd = train(model_sgd, training_data, BASE_CONFIG_DENSE)
+
+    reference_model = build_model(BASE_CONFIG_DENSE)
+    initial_state = copy.deepcopy(reference_model.state_dict())
+
+
+
+    # train_scores = regression_metrics(result_sgd.model, training_data)
+    test_scores = regression_metrics(result_sgd.model, test_data)
+    plot_training_history(
+        result_sgd,
+        output_dir / f"{BASE_CONFIG_DENSE['model']['name']}_sgd_history.png",
+    )
+    print(
+        f"sgd | test RMSE={test_scores['rmse']:.4f} "
+        f"(${test_scores['rmse'] * 100_000:,.0f}) | "
+        f"MAE={test_scores['mae']:.4f} | R2={test_scores['r2']:.4f}"
+    )
+
+    print("----------------------------Next Model----------------------------------")
+    BASE_CONFIG_DENSE['training']['algorithm'] = "s_sam"
+
+
+    model_ssam = build_model(BASE_CONFIG_DENSE)
+
+    model_ssam.load_state_dict(initial_state, strict=True)
+
+    result_ssam = train(model_ssam, training_data, BASE_CONFIG_DENSE)
+
+    # train_scores = regression_metrics(result_sgd.model, training_data)
+    test_scores = regression_metrics(result_ssam.model, test_data)
+    plot_training_history(
+        result_ssam,
+        output_dir / f"{BASE_CONFIG_DENSE['model']['name']}_ssam_history.png",
+    )
+    print(
+        f"sgd | test RMSE={test_scores['rmse']:.4f} "
+        f"(${test_scores['rmse'] * 100_000:,.0f}) | "
+        f"MAE={test_scores['mae']:.4f} | R2={test_scores['r2']:.4f}"
+    )
+    print("----------------------------------------------------------------")
 
 
 if __name__ == "__main__":

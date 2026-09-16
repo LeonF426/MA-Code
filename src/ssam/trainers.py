@@ -216,6 +216,7 @@ def train(
     model_name = model_section.get("name", model.__class__.__name__)
     model_type = model_section.get("type", model.__class__.__name__)
     print(f"Training {model_name} of type {model_type!r}")
+    print(f"Layers: {config['model']['layers']}")
     print(f"Learning rate policy: {learning_rate_policy.name}")
 
     step = 0

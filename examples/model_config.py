@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from ssam import build_dataset, build_model, plot_training_history, train
 
-SEED = 100
+SEED = 10
 
 BASE_CONFIG = {
     "model": {
@@ -40,7 +40,62 @@ BASE_CONFIG = {
     },
     "training": {
         "algorithm": "sgd",  # replaced for every run
-        "steps": 500,
+        "steps": 1000,
+        "batch_size": 256,
+        "learning_rate": {
+            "name": "tamed",
+            "type": "sgd",
+            "inserted_lr": {
+                "name": "constant",
+                "value": 0.1,
+            },
+        },
+        "sharpness_scale": {"name": "inverse_time","initial": 2,"power": 0.25,"floor": 0.0},
+        "perturbation": {
+            "distribution": "gaussian",
+            "samples": 8,
+            "normalized": True,
+            "antithetic": True,
+        },
+        "optimizer": {
+            "name": "sgd",
+            "momentum": 0.0,
+        },
+        "loss": "mse",
+        "checkpoint_every": 0,
+        "device": "auto",
+    },
+}
+
+BASE_CONFIG_DENSE = {
+    "model": {
+        "name": "california_dense",
+        "type": "mixed_linear",
+        "input_dim": 8,
+        "layers": [
+            {"type": "dense", "in_dim": 8, "out_dim": 10},
+            {"type": "dense", "in_dim": 10, "out_dim": 8}
+        ],  # filled separately for every depth
+        "activation": "identity",
+        "output_activation": "identity",
+        "output_reduction": "sum",
+        "bias": False,
+        "parameter_init": {
+            "type": "ones"
+        },
+    },
+    "data": {
+        "name": "california_housing",
+        "root": "data",
+        "test_fraction": 0.2,
+        "standardize": True,
+        "standardize_target": False,
+        "download": True,
+        "seed": 7,
+    },
+    "training": {
+        "algorithm": "sgd",  # replaced for every run
+        "steps": 1000,
         "batch_size": 256,
         "learning_rate": {
             "name": "tamed",
