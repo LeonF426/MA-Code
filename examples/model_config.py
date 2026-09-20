@@ -1,201 +1,214 @@
+"""Configurations for the California Housing comparison.
+
+The targets stay in scikit-learn's original $100,000 unit. Consequently every
+model must contain an intercept: centered inputs plus an intercept-free model
+cannot reproduce the non-zero target mean.
+"""
 
 from __future__ import annotations
 
-import argparse
 import copy
-import json
-import math
-from pathlib import Path
 
-import torch
-from torch.utils.data import DataLoader, Dataset
 
-from ssam import build_dataset, build_model, plot_training_history, train
+SEED = 102
 
-SEED = 10
+DATA_CONFIG = {
+    "name": "california_housing",
+    "root": "data",
+    "test_fraction": 0.2,
+    # The canonical dataset has no missing values, but keeping this enabled makes
+    # preprocessing safe for locally modified copies. Statistics are learned
+    # from the training split only.
+    "impute_missing": True,
+    # A few ratio features contain extreme values. Winsorization prevents those
+    # observations from dominating the mean/std and stochastic gradients.
+    "clip_quantiles": [0.005, 0.995],
+    "standardize": True,
+    "standardize_target": False,
+    "download": True,
+    "seed": 7,
+}
 
-BASE_CONFIG = {
-    "model": {
+TRAINING_CONFIG = {
+    "algorithm": "sgd",  # replaced for every matched pair
+    "steps": 1000,
+    "batch_size": 256,
+    "learning_rate": {
+        "name": "tamed",
+        "type": "sgd",
+        "inserted_lr": {"name": "constant", "value": 0.05},
+    },
+    # A radius of 2 was larger than the useful parameter scale for these models.
+    # Normalized noise with radius 0.05 is a deliberately modest regularizer.
+    "sharpness_scale": {"name": "constant", "value": 0.05},
+    "perturbation": {
+        "distribution": "gaussian",
+        "samples": 8,
+        "normalized": True,
+        "antithetic": True,
+    },
+    "optimizer": {"name": "sgd", "momentum": 0.0},
+    "loss": "mse",
+    "checkpoint_every": 0,
+    "seed": SEED,
+    "device": "auto",
+}
+
+VISUALIZATION_CONFIG = {
+    "output_dir": "outputs/california",
+    "interpolation": {
+        "sharpness_scale": 0.05,
+        "sharpness_samples": 64,
+        "sharpness_seed": 10023,
+        "interpolation_points": 11,
+        "normalized": True,
+        "antithetic": True,
+    },
+}
+
+
+def _experiment(model: dict) -> dict:
+    return {
+        "model": model,
+        "data": copy.deepcopy(DATA_CONFIG),
+        "training": copy.deepcopy(TRAINING_CONFIG),
+        "visualization": copy.deepcopy(VISUALIZATION_CONFIG),
+    }
+
+
+# A genuine ordinary linear-regression baseline: one 8 -> 1 affine layer.
+BASE_CONFIG_LINEAR = _experiment(
+    {
+        "name": "california_linear",
+        "type": "mixed_linear",
+        "input_dim": 8,
+        "layers": [{"type": "dense", "out_dim": 1, "bias": True}],
+        "activation": "identity",
+        "output_activation": "identity",
+        "output_reduction": "none",
+        "bias": True,
+        "parameter_init": {"type": "xavier_uniform", "bias": 0.0},
+    }
+)
+
+
+# Filled by config_for for the requested depth. Biases are required because the
+# target is intentionally not centered.
+BASE_CONFIG = _experiment(
+    {
         "name": "california_diag",
         "type": "mixed_linear",
         "input_dim": 8,
-        "layers": [],  # filled separately for every depth
+        "layers": [],
         "activation": "identity",
         "output_activation": "identity",
         "output_reduction": "sum",
-        "bias": False,
+        "bias": True,
         "parameter_init": {
             "type": "identity",
             "bias": 0.0,
-        },
-    },
-    "data": {
-        "name": "california_housing",
-        "root": "data",
-        "test_fraction": 0.2,
-        "standardize": True,
-        "standardize_target": False,
-        "download": True,
-        "seed": 7,
-    },
-    "training": {
-        "algorithm": "sgd",  # replaced for every run
-        "steps": 1000,
-        "batch_size": 256,
-        "learning_rate": {
-            "name": "tamed",
-            "type": "sgd",
-            "inserted_lr": {
-                "name": "constant",
-                "value": 0.1,
+            "rescaling": {
+                "enabled": True,
+                "mode": "layerwise",
+                "log_scale_std": 0.5,
+                "seed": SEED,
             },
         },
-        "sharpness_scale": {"name": "inverse_time","initial": 2,"power": 0.25,"floor": 0.0},
-        "perturbation": {
-            "distribution": "gaussian",
-            "samples": 8,
-            "normalized": True,
-            "antithetic": True,
-        },
-        "optimizer": {
-            "name": "sgd",
-            "momentum": 0.0,
-        },
-        "loss": "mse",
-        "checkpoint_every": 0,
-        "device": "auto",
-    },
-}
+    }
+)
 
-BASE_CONFIG_DENSE = {
-    "model": {
-        "name": "california_dense",
+
+# A factorized linear model, kept separate from the ordinary linear baseline.
+# The final layer produces one scalar directly; an all-ones initialization and an
+# 8-vector output followed by sum made the old starting function unnecessarily
+# large and ill-conditioned.
+BASE_CONFIG_DENSE = _experiment(
+    {
+        "name": "california_dense_factorized",
         "type": "mixed_linear",
         "input_dim": 8,
         "layers": [
-            {"type": "dense", "in_dim": 8, "out_dim": 10},
-            {"type": "dense", "in_dim": 10, "out_dim": 8}
-        ],  # filled separately for every depth
+            {"type": "dense", "out_dim": 16, "bias": False},
+            {"type": "dense", "out_dim": 1, "bias": True},
+        ],
         "activation": "identity",
         "output_activation": "identity",
-        "output_reduction": "sum",
-        "bias": False,
+        "output_reduction": "none",
+        "bias": True,
         "parameter_init": {
-            "type": "ones"
-        },
-    },
-    "data": {
-        "name": "california_housing",
-        "root": "data",
-        "test_fraction": 0.2,
-        "standardize": True,
-        "standardize_target": False,
-        "download": True,
-        "seed": 7,
-    },
-    "training": {
-        "algorithm": "sgd",  # replaced for every run
-        "steps": 1000,
-        "batch_size": 256,
-        "learning_rate": {
-            "name": "tamed",
-            "type": "sgd",
-            "inserted_lr": {
-                "name": "constant",
-                "value": 0.1,
+            "type": "xavier_uniform",
+            "bias": 0.0,
+            "rescaling": {
+                "enabled": True,
+                "mode": "neuronwise",
+                "log_scale_std": 0.5,
+                "seed": SEED,
             },
         },
-        "sharpness_scale": {"name": "inverse_time","initial": 2,"power": 0.25,"floor": 0.0},
-        "perturbation": {
-            "distribution": "gaussian",
-            "samples": 8,
-            "normalized": True,
-            "antithetic": True,
+    }
+)
+
+
+BASE_CONFIG_RELU = _experiment(
+    {
+        "name": "california_relu",
+        "type": "mixed_linear",
+        "input_dim": 8,
+        "layers": [
+            {"type": "dense", "out_dim": 64, "bias": True},
+            {"type": "dense", "out_dim": 32, "bias": True},
+            {"type": "dense", "out_dim": 1, "bias": True},
+        ],
+        "activation": "relu",
+        "output_activation": "identity",
+        "output_reduction": "none",
+        "bias": True,
+        "parameter_init": {
+            "type": "kaiming_uniform",
+            "nonlinearity": "relu",
+            "bias": 0.0,
+            "rescaling": {
+                "enabled": True,
+                "mode": "neuronwise",
+                "log_scale_std": 0.5,
+                "seed": SEED,
+            },
         },
-        "optimizer": {
-            "name": "sgd",
-            "momentum": 0.0,
-        },
-        "loss": "mse",
-        "checkpoint_every": 0,
-        "device": "auto",
-    },
-}
+    }
+)
+
 
 def config_for(depth: int, algorithm: str) -> dict:
+    """Build a matched diagonal-model configuration."""
+
+    if depth < 1:
+        raise ValueError("depth must be positive")
+    if algorithm not in {"sgd", "s_sam"}:
+        raise ValueError("algorithm must be 'sgd' or 's_sam'")
+
     config = copy.deepcopy(BASE_CONFIG)
-
-    config["model"]["name"] = (
-        f"california_{depth}L_diag_{algorithm}"
-    )
-
+    config["model"]["name"] = f"california_{depth}L_diag_{algorithm}"
     config["model"]["layers"] = [
-        {
-            "type": "diag",
-            "in_dim": config["model"]["input_dim"],
-            "out_dim": config["model"]["input_dim"],
-            "bias": False,
-        }
-        for _ in range(depth)
+        {"type": "diag", "out_dim": 8, "bias": index == depth - 1}
+        for index in range(depth)
     ]
-
     config["training"]["algorithm"] = algorithm
-
     if algorithm == "sgd":
         config["training"]["sharpness_scale"] = {
             "name": "constant",
             "value": 0.0,
         }
-
     return config
 
 
 def model_config(kind: str) -> dict:
-    """Return a linear model or a small nonlinear baseline."""
+    """Return a copy of the ordinary linear or nonlinear model section."""
 
-    common = {
-        "name": f"california_{kind}",
-        "type": "mixed_linear",
-        "input_dim": 8,
-        "output_dim": 1,
-        "output_activation": "identity",
-        "bias": True,
-        "parameter_init": {"type": "xavier_uniform"},
+    choices = {
+        "linear": BASE_CONFIG_LINEAR,
+        "mlp": BASE_CONFIG_RELU,
     }
-    if kind == "linear":
-        return {**common, "depth": 1, "activation": "identity"}
-    return {
-        **common,
-        "depth": 3,
-        "width": [64, 32],
-        "activation": "gelu",
-    }
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--algorithms",
-        nargs="+",
-        choices=("sgd", "s_sam"),
-        default=("sgd", "s_sam"),
-    )
-    parser.add_argument("--model", choices=("linear", "mlp"), default="linear")
-    parser.add_argument("--steps", type=int, default=500)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--learning-rate", type=float, default=0.01)
-    parser.add_argument("--sharpness-scale", type=float, default=0.05)
-    parser.add_argument("--perturbation-samples", type=int, default=4)
-    parser.add_argument("--test-fraction", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--device", default="auto")
-    parser.add_argument("--data-dir", type=Path, default=Path("data"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/california"))
-    parser.add_argument(
-        "--no-download",
-        action="store_true",
-        help="Require the dataset to exist in scikit-learn's local cache.",
-    )
-    return parser.parse_args()
-
-
+    try:
+        return copy.deepcopy(choices[kind]["model"])
+    except KeyError as exc:
+        raise ValueError("kind must be 'linear' or 'mlp'") from exc

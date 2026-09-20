@@ -55,11 +55,15 @@ def prepare_california_housing_data(
     seed: int = 0,
     standardize: bool = True,
     standardize_target: bool = False,
+    impute_missing: bool = True,
+    clip_quantiles: Sequence[float] | None = None,
 ) -> TensorDataset:
-    """Split and process California Housing arrays without data leakage.
+    """Clean, split, and process California Housing without data leakage.
 
-    The split is deterministic. Feature and target statistics are always fitted on
-    the training partition, including when the test partition is requested.
+    The split is deterministic. Missing-value imputation, quantile clipping, and
+    standardization are fitted on the training partition, including when the test
+    partition is requested. Non-finite targets are rejected because imputing a
+    regression label would silently change the supervised problem.
     """
 
     inputs = torch.as_tensor(features, dtype=torch.float32).clone()
@@ -70,6 +74,12 @@ def prepare_california_housing_data(
         )
     if labels.shape[0] != inputs.shape[0]:
         raise ValueError("Features and targets must contain the same number of samples")
+    if not torch.isfinite(labels).all().item():
+        invalid_targets = int((~torch.isfinite(labels)).sum().item())
+        raise ValueError(
+            "California Housing targets must be finite; found "
+            f"{invalid_targets} non-finite value(s)"
+        )
     if not 0.0 < test_fraction < 1.0:
         raise ValueError("test_fraction must be in (0, 1)")
     if inputs.shape[0] < 2:
@@ -81,6 +91,53 @@ def prepare_california_housing_data(
     test_count = min(test_count, inputs.shape[0] - 1)
     test_indices = permutation[:test_count]
     train_indices = permutation[test_count:]
+
+    invalid_features = ~torch.isfinite(inputs)
+    if invalid_features.any().item():
+        if not impute_missing:
+            invalid_count = int(invalid_features.sum().item())
+            raise ValueError(
+                "California Housing features contain "
+                f"{invalid_count} non-finite value(s); enable impute_missing"
+            )
+        for feature_index in range(inputs.shape[1]):
+            training_column = inputs[train_indices, feature_index]
+            finite_training_values = training_column[
+                torch.isfinite(training_column)
+            ]
+            if finite_training_values.numel() == 0:
+                raise ValueError(
+                    "Cannot impute feature "
+                    f"{CALIFORNIA_HOUSING_FEATURES[feature_index]!r}: the "
+                    "training partition contains no finite values"
+                )
+            median = finite_training_values.median()
+            column = inputs[:, feature_index]
+            column[~torch.isfinite(column)] = median
+
+    if clip_quantiles is not None:
+        if len(clip_quantiles) != 2:
+            raise ValueError("clip_quantiles must contain [lower, upper]")
+        lower_quantile, upper_quantile = map(float, clip_quantiles)
+        if not 0.0 <= lower_quantile < upper_quantile <= 1.0:
+            raise ValueError(
+                "clip_quantiles must satisfy 0 <= lower < upper <= 1"
+            )
+        training_inputs = inputs[train_indices]
+        lower_bounds = torch.quantile(
+            training_inputs,
+            lower_quantile,
+            dim=0,
+        )
+        upper_bounds = torch.quantile(
+            training_inputs,
+            upper_quantile,
+            dim=0,
+        )
+        inputs = torch.maximum(
+            torch.minimum(inputs, upper_bounds),
+            lower_bounds,
+        )
 
     if standardize:
         feature_mean = inputs[train_indices].mean(dim=0)
@@ -103,6 +160,8 @@ def make_california_housing_dataset(
     seed: int = 0,
     standardize: bool = True,
     standardize_target: bool = False,
+    impute_missing: bool = True,
+    clip_quantiles: Sequence[float] | None = None,
     download: bool = True,
 ) -> TensorDataset:
     """Load sklearn's California Housing regression benchmark as tensors.
@@ -130,6 +189,8 @@ def make_california_housing_dataset(
         seed=seed,
         standardize=standardize,
         standardize_target=standardize_target,
+        impute_missing=impute_missing,
+        clip_quantiles=clip_quantiles,
     )
 
 
@@ -155,6 +216,8 @@ def build_dataset(config: Mapping[str, Any], train: bool = True) -> Dataset:
             seed=int(config.get("seed", 0)),
             standardize=bool(config.get("standardize", True)),
             standardize_target=bool(config.get("standardize_target", False)),
+            impute_missing=bool(config.get("impute_missing", True)),
+            clip_quantiles=config.get("clip_quantiles"),
             download=bool(config.get("download", True)),
         )
 

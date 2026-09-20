@@ -216,7 +216,6 @@ def train(
     model_name = model_section.get("name", model.__class__.__name__)
     model_type = model_section.get("type", model.__class__.__name__)
     print(f"Training {model_name} of type {model_type!r}")
-    print(f"Layers: {config['model']['layers']}")
     print(f"Learning rate policy: {learning_rate_policy.name}")
 
     step = 0
@@ -235,14 +234,6 @@ def train(
                 step_index=step,
                 learning_rate_policy=learning_rate_policy,
             )
-            if step == 0:
-                print("Resolved algorithm:", resolved["algorithm"])
-                print("Update rule:", type(update_rule).__name__)
-                print("Loss:", outcome.loss)
-                print("Clean loss:", outcome.clean_loss)
-                print("Raw regularized loss:", outcome.regularized_loss)
-
-
             record: dict[str, Any] = {
                 "step": step,
                 "epoch": epoch,
@@ -257,8 +248,12 @@ def train(
                 "sharpness_scale": scale,
                 "layer_balance": _layer_balancedness(model),
             }
+            for name, value in outcome.clean_components.items():
+                record[f"clean_{name}"] = value
+            for name, value in outcome.regularized_components.items():
+                record[f"regularized_{name}"] = value
             for key, value in record.items():
-                history[key].append(value)
+                history.setdefault(key, []).append(value)
             if checkpoint_every and (step + 1) % checkpoint_every == 0:
                 result.parameter_snapshots.append(flatten_parameters(model))
                 result.snapshot_losses.append(outcome.loss)

@@ -178,8 +178,8 @@ def strong_descent_diag(
         if loss < 0.0:
             raise ValueError(f"L_R must be non-negative, received {loss}")
 
-        upper_bound = 2.0 * (1.0 - delta) * eta**2 / (
-            constant * max(loss + safety, loss_floor)
+        upper_bound = safety * 2.0 * (1.0 - delta) * eta**2 / (
+            constant * max(loss, loss_floor)
         )
         learning_rate = upper_bound
         return min(learning_rate, max_lr) if max_lr is not None else learning_rate

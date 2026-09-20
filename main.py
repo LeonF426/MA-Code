@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import copy
+import json
+from dataclasses import asdict
 
 import torch
 from torch.utils.data import DataLoader
@@ -10,8 +12,10 @@ from ssam import (
     build_dataset,
     build_model,
     plot_training_history,
+    plot_sharpness_interpolation,
     train,
-    evaluate_average_sharpness
+    evaluate_average_sharpness,
+    evaluate_average_sharpness_interpolation,
 )
 
 seed = 125
@@ -192,6 +196,30 @@ def main() -> None:
         "GD average sharpness:    "
         f"{sharpness_2.average_sharpness:.8g} "
         f"± {1.96 * sharpness_2.standard_error:.3g}"
+    )
+
+    # Interpolate from the SGD endpoint (t=0) to the S-SAM endpoint (t=1).
+    # Common Gaussian directions are reused at every point so changes along the
+    # curve are easier to distinguish from Monte Carlo noise.
+    interpolation = evaluate_average_sharpness_interpolation(
+        result_2.model,
+        result_1.model,
+        evaluation_loader,
+        evaluation_loss,
+        sharpness_scale=evaluation_scale,
+        interpolation_points=11,
+        samples=512,
+        seed=evaluation_seed,
+        antithetic=True,
+    )
+    plot_sharpness_interpolation(
+        interpolation,
+        output_dir / "sharpness_interpolation.png",
+        endpoint_labels=("SGD", "S-SAM"),
+    )
+    (output_dir / "sharpness_interpolation.json").write_text(
+        json.dumps(asdict(interpolation), indent=2),
+        encoding="utf-8",
     )
 
     plot_training_history(

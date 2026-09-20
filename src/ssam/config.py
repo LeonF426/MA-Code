@@ -27,6 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "sharpness_scale": {"name": "constant", "value": 0.0},
         "optimizer": {"name": "sgd", "momentum": 0.0, "weight_decay": 0.0},
         "loss": "mse",
+        "loss_requires_grad": False,
         "seed": 0,
         "device": "auto",
         "checkpoint_every": 0,
@@ -53,7 +54,7 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
 
     if not isinstance(config, Mapping):
         raise TypeError("config must be a mapping")
-    unknown = set(config) - {"model", "training", "data", "visualization"}
+    unknown = set(config) - {"model", "training", "data", "visualization", "pinn"}
     if unknown:
         raise ValueError(f"Unknown top-level config keys: {sorted(unknown)}")
 

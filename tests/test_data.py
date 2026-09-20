@@ -52,6 +52,69 @@ def test_california_standardization_is_fitted_on_training_partition():
     assert float(training.tensors[1].max()) <= 5.0
 
 
+def test_california_cleaning_uses_only_training_statistics():
+    features, targets = _arrays(20)
+    permutation = torch.randperm(20, generator=torch.Generator().manual_seed(9))
+    test_index = int(permutation[0])
+    train_index = int(permutation[5])
+    features[train_index, 2] = float("nan")
+    features[test_index, 3] = 1e9
+
+    training = prepare_california_housing_data(
+        features,
+        targets,
+        train=True,
+        test_fraction=0.2,
+        seed=9,
+        standardize=False,
+        clip_quantiles=(0.1, 0.9),
+    )
+    test = prepare_california_housing_data(
+        features,
+        targets,
+        train=False,
+        test_fraction=0.2,
+        seed=9,
+        standardize=False,
+        clip_quantiles=(0.1, 0.9),
+    )
+
+    assert torch.isfinite(training.tensors[0]).all()
+    assert torch.isfinite(test.tensors[0]).all()
+    # The held-out extreme value is clipped to a quantile learned without it.
+    assert test.tensors[0][:, 3].max() <= training.tensors[0][:, 3].max()
+
+
+def test_california_cleaning_can_reject_non_finite_values():
+    features, targets = _arrays()
+    features[0, 0] = float("inf")
+    with pytest.raises(ValueError, match="enable impute_missing"):
+        prepare_california_housing_data(
+            features,
+            targets,
+            impute_missing=False,
+        )
+
+    features, targets = _arrays()
+    targets[0] = float("nan")
+    with pytest.raises(ValueError, match="targets must be finite"):
+        prepare_california_housing_data(features, targets)
+
+
+@pytest.mark.parametrize(
+    "quantiles",
+    [(0.9,), (-0.1, 0.9), (0.9, 0.1), (0.1, 1.1)],
+)
+def test_california_rejects_invalid_clip_quantiles(quantiles):
+    features, targets = _arrays()
+    with pytest.raises(ValueError, match="clip_quantiles"):
+        prepare_california_housing_data(
+            features,
+            targets,
+            clip_quantiles=quantiles,
+        )
+
+
 def test_build_dataset_fetches_california_housing_without_network(monkeypatch, tmp_path):
     datasets = pytest.importorskip("sklearn.datasets")
     features, targets = _arrays(10)

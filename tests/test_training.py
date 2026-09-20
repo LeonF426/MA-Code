@@ -83,3 +83,51 @@ def test_ssam_reuses_regularized_loss_for_adaptive_learning_rate():
     assert result.history["learning_rate"][0] == pytest.approx(expected)
     assert len(result.history["clean_loss"]) == 2
 
+
+def test_ssam_reduces_two_factor_imbalance_from_exact_fit():
+    config = {
+        "model": {
+            "name": "two_factor_test",
+            "type": "mixed_linear",
+            "input_dim": 1,
+            "layers": [
+                {"type": "diag", "out_dim": 1, "activation": "identity"},
+                {"type": "diag", "out_dim": 1},
+            ],
+            "bias": False,
+            "parameter_init": {"type": "ones"},
+        },
+        "training": {
+            "algorithm": "s_sam",
+            "steps": 100,
+            "batch_size": 8,
+            "learning_rate": {"name": "constant", "value": 0.01},
+            "sharpness_scale": {"name": "constant", "value": 0.2},
+            "perturbation": {"samples": 16, "antithetic": True},
+            "optimizer": {"name": "sgd"},
+            "loss": "mse",
+            "device": "cpu",
+            "seed": 37,
+        },
+    }
+    model = build_model(config)
+    with torch.no_grad():
+        model.layers[0].weight.fill_(10.0)
+        model.layers[1].weight.fill_(0.1)
+    initial_imbalance = abs(
+        model.layers[0].weight.item() ** 2
+        - model.layers[1].weight.item() ** 2
+    )
+
+    result = train(
+        model,
+        (torch.ones((8, 1)), torch.ones((8, 1))),
+        config,
+    )
+    final_first = result.model.layers[0].weight.item()
+    final_second = result.model.layers[1].weight.item()
+    final_imbalance = abs(final_first**2 - final_second**2)
+
+    assert final_imbalance < 0.9 * initial_imbalance
+    assert (final_first * final_second - 1.0) ** 2 < 1e-3
+

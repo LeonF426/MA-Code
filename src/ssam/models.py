@@ -11,6 +11,7 @@ from torch import nn
 
 from .config import model_config
 from .layers import DiagLinear
+from .rescaling import apply_function_preserving_linear_rescaling
 
 
 _ACTIVATIONS: dict[str, Callable[[], nn.Module]] = {
@@ -230,6 +231,23 @@ def build_model(config: Mapping[str, Any]) -> nn.Module:
         default_bias=bool(resolved.get("bias", True)),
         output_reduction=str(resolved.get("output_reduction", "none")),
     )
-    initialize_model(model, resolved.get("parameter_init", {"type": "default"}))
+    initialization = resolved.get("parameter_init", {"type": "default"})
+    initialize_model(model, initialization)
+    if isinstance(initialization, Mapping):
+        rescaling = initialization.get("rescaling")
+        if rescaling:
+            options = {} if rescaling is True else dict(rescaling)
+            if bool(options.pop("enabled", True)):
+                model.rescaling_result = apply_function_preserving_linear_rescaling(
+                    model,
+                    log_scale_std=float(options.pop("log_scale_std", 1.0)),
+                    seed=int(options.pop("seed", 0)),
+                    mode=str(options.pop("mode", "neuronwise")),
+                )
+                if options:
+                    raise ValueError(
+                        "Unknown parameter_init.rescaling keys: "
+                        f"{sorted(options)}"
+                    )
     return model
 
