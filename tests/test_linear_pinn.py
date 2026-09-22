@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from ssam import (
+    advection_features,
     advection_loss_components,
     advection_residual,
     build_advection_points,
@@ -17,10 +18,12 @@ from ssam import (
     evaluate_advection_pinn,
     evaluate_heat_pinn,
     evaluate_polynomial_poisson_pinn,
+    exact_advection_solution,
     heat_loss_components,
     heat_residual,
     polynomial_poisson_loss_components,
     polynomial_poisson_residual,
+    plot_space_time_pinn_solutions,
     train_advection_pinn,
     train_heat_pinn,
     train_polynomial_poisson_pinn,
@@ -138,8 +141,12 @@ def test_linear_pinn_examples_start_functionally_equivalent_but_imbalanced(
 
     # Rescaling changes the factorization, not the identity-initialized function.
     torch.testing.assert_close(model(inputs), inputs.sum(dim=-1))
-    assert model.rescaling_result.mode == "layerwise"
-    assert model.rescaling_result.log_scale_std == pytest.approx(0.5)
+    rescaling = config["model"]["parameter_init"]["rescaling"]
+    assert model.rescaling_result.mode == rescaling["mode"]
+    assert model.rescaling_result.log_scale_std == pytest.approx(
+        rescaling["log_scale_std"]
+    )
+    assert model.rescaling_result.log_scale_std > 0.0
 
     layer_energies = torch.tensor(
         [float(layer.weight.detach().square().sum()) for layer in model.layers]
@@ -217,3 +224,28 @@ def test_interpolation_sharpness_supports_coordinate_derivatives():
     assert len(result.points) == 3
     assert all(math.isfinite(point.clean_loss) for point in result.points)
     assert all(point.average_sharpness == pytest.approx(0.0) for point in result.points)
+
+
+def test_space_time_solution_and_prediction_panels_share_color_scale():
+    config = _config(3, "sgd")
+    points = build_advection_points(config)
+    first = build_model(config)
+    second = build_model(config)
+    with torch.no_grad():
+        second.layers[-1].weight.mul_(3.0)
+
+    figure = plot_space_time_pinn_solutions(
+        {"first": first, "second": second},
+        points,
+        advection_features,
+        exact_advection_solution,
+    )
+    solution_axes = [
+        axis
+        for axis in figure.axes
+        if axis.images and "error" not in axis.get_title().lower()
+    ]
+    color_limits = [axis.images[0].get_clim() for axis in solution_axes]
+
+    assert len(color_limits) == 4
+    assert all(limits == color_limits[0] for limits in color_limits[1:])

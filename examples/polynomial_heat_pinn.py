@@ -40,8 +40,8 @@ CONFIG = {
             "type": "identity",
             "rescaling": {
                 "mode": "layerwise",
-                "log_scale_std": 0.5,
-                "seed": 2320,
+                "log_scale_std": 0.7,
+                "seed": 232,
             },
         },
     },
@@ -75,7 +75,7 @@ CONFIG = {
         "learning_rate": {"name": "constant", "value": 1e-3},
         "sharpness_scale": {
             "name": "constant",
-            "value": 0.1
+            "value": 0.5
         },
         "perturbation": {
             "distribution": "gaussian",

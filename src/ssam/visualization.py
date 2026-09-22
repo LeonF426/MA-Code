@@ -212,7 +212,7 @@ def plot_poisson_solutions(
     path: str | Path | None = None,
     show: bool = False,
 ):
-    """Plot exact, predicted, and absolute-error fields on a shared grid."""
+    """Plot fields with one color scale shared by all solutions and predictions."""
 
     from .pinn import exact_poisson_solution
 
@@ -222,7 +222,10 @@ def plot_poisson_solutions(
     rows = len(models)
     fig, axes = plt.subplots(rows, 3, figsize=(11, 3.4 * rows), squeeze=False)
     resolution = int(points.evaluation_resolution)
-    for row, (label, model) in enumerate(models.items()):
+    evaluated_rows = []
+    solution_vmin = float("inf")
+    solution_vmax = float("-inf")
+    for label, model in models.items():
         parameter = next(model.parameters())
         coordinates = points.evaluation.to(
             device=parameter.device,
@@ -237,18 +240,37 @@ def plot_poisson_solutions(
             exact = exact_poisson_solution(coordinates)
             error = (prediction - exact).abs()
         model.train(was_training)
+        exact = exact.detach().cpu()
+        prediction = prediction.detach().cpu()
+        error = error.detach().cpu()
+        solution_vmin = min(
+            solution_vmin,
+            float(exact.min()),
+            float(prediction.min()),
+        )
+        solution_vmax = max(
+            solution_vmax,
+            float(exact.max()),
+            float(prediction.max()),
+        )
+        evaluated_rows.append((label, exact, prediction, error))
+
+    for row, (label, exact, prediction, error) in enumerate(evaluated_rows):
         fields = (
             (exact, "Exact solution"),
             (prediction, f"{label} prediction"),
             (error, f"{label} absolute error"),
         )
-        for axis, (field, title) in zip(axes[row], fields):
+        for column, (axis, (field, title)) in enumerate(zip(axes[row], fields)):
+            is_solution = column < 2
             image = axis.imshow(
-                field.detach().cpu().reshape(resolution, resolution).T,
+                field.reshape(resolution, resolution).T.numpy(),
                 origin="lower",
                 extent=(0.0, 1.0, 0.0, 1.0),
                 aspect="equal",
-                cmap="viridis" if "error" not in title else "magma",
+                cmap="viridis" if is_solution else "magma",
+                vmin=solution_vmin if is_solution else None,
+                vmax=solution_vmax if is_solution else None,
             )
             axis.set(xlabel="x", ylabel="y", title=title)
             fig.colorbar(image, ax=axis, shrink=0.8)
@@ -264,7 +286,7 @@ def plot_space_time_pinn_solutions(
     path: str | Path | None = None,
     show: bool = False,
 ):
-    """Plot exact, predicted, and error fields for a 1D space-time PINN."""
+    """Plot fields with one color scale shared by all solutions and predictions."""
 
     if not models:
         raise ValueError("At least one model is required")
@@ -273,7 +295,10 @@ def plot_space_time_pinn_solutions(
     fig, axes = plt.subplots(rows, 3, figsize=(11, 3.4 * rows), squeeze=False)
     space_resolution = int(points.space_resolution)
     time_resolution = int(points.time_resolution)
-    for row, (label, model) in enumerate(models.items()):
+    evaluated_rows = []
+    solution_vmin = float("inf")
+    solution_vmax = float("-inf")
+    for label, model in models.items():
         parameter = next(model.parameters())
         coordinates = points.evaluation.to(
             device=parameter.device,
@@ -288,27 +313,43 @@ def plot_space_time_pinn_solutions(
             exact = exact_solution(coordinates)
             error = (prediction - exact).abs()
         model.train(was_training)
+        exact = exact.detach().cpu()
+        prediction = prediction.detach().cpu()
+        error = error.detach().cpu()
+        solution_vmin = min(
+            solution_vmin,
+            float(exact.min()),
+            float(prediction.min()),
+        )
+        solution_vmax = max(
+            solution_vmax,
+            float(exact.max()),
+            float(prediction.max()),
+        )
         extent = (
             float(coordinates[:, 0].min()),
             float(coordinates[:, 0].max()),
             float(coordinates[:, 1].min()),
             float(coordinates[:, 1].max()),
         )
+        evaluated_rows.append((label, exact, prediction, error, extent))
+
+    for row, (label, exact, prediction, error, extent) in enumerate(evaluated_rows):
         fields = (
             (exact, "Exact solution"),
             (prediction, f"{label} prediction"),
             (error, f"{label} absolute error"),
         )
-        for axis, (field, title) in zip(axes[row], fields):
+        for column, (axis, (field, title)) in enumerate(zip(axes[row], fields)):
+            is_solution = column < 2
             image = axis.imshow(
-                field.detach()
-                .cpu()
-                .reshape(space_resolution, time_resolution)
-                .T,
+                field.reshape(space_resolution, time_resolution).T.numpy(),
                 origin="lower",
                 extent=extent,
                 aspect="auto",
-                cmap="viridis" if "error" not in title else "magma",
+                cmap="viridis" if is_solution else "magma",
+                vmin=solution_vmin if is_solution else None,
+                vmax=solution_vmax if is_solution else None,
             )
             axis.set(xlabel="x", ylabel="t", title=title)
             fig.colorbar(image, ax=axis, shrink=0.8)

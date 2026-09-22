@@ -13,6 +13,7 @@ from ssam import (
     poisson_loss_components,
     poisson_residual,
     plot_pinn_training_history,
+    plot_poisson_solutions,
     train,
     train_poisson_pinn,
 )
@@ -154,3 +155,24 @@ def test_pinn_history_plot_skips_unavailable_gaussian_curves():
     }
     figure = plot_pinn_training_history({"sgd": history})
     assert len(figure.axes) == 3
+
+
+def test_poisson_solution_and_prediction_panels_share_color_scale():
+    config = _config("sgd")
+    points = build_poisson_points(config)
+    first = build_model(config).double()
+    second = build_model(config).double()
+    with torch.no_grad():
+        for parameter in second.parameters():
+            parameter.mul_(3.0)
+
+    figure = plot_poisson_solutions({"first": first, "second": second}, points)
+    solution_axes = [
+        axis
+        for axis in figure.axes
+        if axis.images and "error" not in axis.get_title().lower()
+    ]
+    color_limits = [axis.images[0].get_clim() for axis in solution_axes]
+
+    assert len(color_limits) == 4
+    assert all(limits == color_limits[0] for limits in color_limits[1:])

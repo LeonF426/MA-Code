@@ -36,7 +36,7 @@ CONFIG = {
         ],
         "output_activation": "identity",
         "output_reduction": "sum",
-        "bias": False,
+        "bias": True,
         "parameter_init": {
             "type": "identity",
             "rescaling": {
