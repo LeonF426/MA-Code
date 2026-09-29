@@ -24,6 +24,7 @@ class LinearRescalingResult:
     log_scale_std: float
     seed: int
     hidden_log_scales: tuple[tuple[float, ...], ...]
+    preserve_function: bool = True
 
     @property
     def hidden_scales(self) -> tuple[tuple[float, ...], ...]:
@@ -44,6 +45,8 @@ def _dimensions(layer: LinearLayer) -> tuple[int, int]:
 def _resolve_linear_layers(
     model: nn.Module,
     layers: Sequence[LinearLayer] | None,
+    *,
+    validate_inferred_activations: bool,
 ) -> list[LinearLayer]:
     if layers is not None:
         resolved = list(layers)
@@ -51,7 +54,7 @@ def _resolve_linear_layers(
         resolved = list(model.layers)
         activations = list(getattr(model, "activations", ()))
         hidden_activations = activations[:-1] if activations else []
-        if any(
+        if validate_inferred_activations and any(
             not isinstance(activation, _SUPPORTED_HOMOGENEOUS_ACTIVATIONS)
             for activation in hidden_activations
         ):
@@ -64,7 +67,10 @@ def _resolve_linear_layers(
         for module in model:
             if isinstance(module, (nn.Linear, DiagLinear)):
                 resolved.append(module)
-            elif not isinstance(module, _SUPPORTED_HOMOGENEOUS_ACTIVATIONS):
+            elif (
+                validate_inferred_activations
+                and not isinstance(module, _SUPPORTED_HOMOGENEOUS_ACTIVATIONS)
+            ):
                 raise ValueError(
                     "Sequential rescaling supports only linear layers and identity, "
                     "ReLU, or LeakyReLU activations"
@@ -90,15 +96,16 @@ def _resolve_linear_layers(
     return resolved
 
 
-def apply_function_preserving_linear_rescaling(
+def _apply_linear_interface_rescaling(
     model: nn.Module,
     *,
     log_scale_std: float = 1.0,
     seed: int = 0,
     mode: str = "neuronwise",
     layers: Sequence[LinearLayer] | None = None,
+    validate_inferred_activations: bool,
 ) -> LinearRescalingResult:
-    """Randomly rescale a sequential linear network without changing its function.
+    """Apply sampled diagonal changes of coordinates at linear interfaces.
 
     At every hidden interface, a positive diagonal matrix ``D`` is sampled. For
     consecutive dense layers, the transformation has the form
@@ -113,13 +120,9 @@ def apply_function_preserving_linear_rescaling(
     coordinate; ``layerwise`` shares one scale across an entire hidden layer.
     ``coordinatewise`` is accepted as an alias for ``neuronwise``.
 
-    The inferred model must be a chain of ``nn.Linear`` and/or ``DiagLinear``
-    layers whose hidden activations are identity, ReLU, or LeakyReLU. Positive
-    rescaling commutes with those activations, so the same proof applies to these
-    nonlinear networks. For a custom model, pass the ordered layers explicitly
-    and ensure that intervening operations have the same positive-homogeneity
-    property. Apply rescaling before constructing an optimizer, because existing
-    optimizer state is not rescaled.
+    Activation validation is selected by the public wrapper. Apply rescaling
+    before constructing an optimizer, because existing optimizer state is not
+    rescaled.
     """
 
     standard_deviation = float(log_scale_std)
@@ -132,7 +135,11 @@ def apply_function_preserving_linear_rescaling(
     if normalized_mode not in {"layerwise", "neuronwise"}:
         raise ValueError("mode must be 'layerwise' or 'neuronwise'")
 
-    resolved = _resolve_linear_layers(model, layers)
+    resolved = _resolve_linear_layers(
+        model,
+        layers,
+        validate_inferred_activations=validate_inferred_activations,
+    )
     generator = torch.Generator(device="cpu")
     generator.manual_seed(int(seed))
     hidden_log_scales: list[torch.Tensor] = []
@@ -207,4 +214,59 @@ def apply_function_preserving_linear_rescaling(
             tuple(float(value) for value in values)
             for values in hidden_log_scales
         ),
+        preserve_function=validate_inferred_activations,
+    )
+
+
+def apply_function_preserving_linear_rescaling(
+    model: nn.Module,
+    *,
+    log_scale_std: float = 1.0,
+    seed: int = 0,
+    mode: str = "neuronwise",
+    layers: Sequence[LinearLayer] | None = None,
+) -> LinearRescalingResult:
+    """Randomly rescale a sequential network without changing its function.
+
+    Inferred hidden activations must be identity, ReLU, or LeakyReLU so positive
+    diagonal rescaling commutes with them. When ``layers`` is supplied directly,
+    the caller is responsible for ensuring the intervening operations are
+    positively homogeneous.
+    """
+
+    return _apply_linear_interface_rescaling(
+        model,
+        log_scale_std=log_scale_std,
+        seed=seed,
+        mode=mode,
+        layers=layers,
+        validate_inferred_activations=True,
+    )
+
+
+def apply_linear_interface_rescaling(
+    model: nn.Module,
+    *,
+    log_scale_std: float = 1.0,
+    seed: int = 0,
+    mode: str = "neuronwise",
+    layers: Sequence[LinearLayer] | None = None,
+) -> LinearRescalingResult:
+    """Rescale linear interfaces even when hidden activations are non-homogeneous.
+
+    This applies the same positive diagonal transformation as
+    :func:`apply_function_preserving_linear_rescaling`, but deliberately does
+    not require the inferred activations to commute with that transformation.
+    It therefore changes the represented function for activations such as tanh,
+    GELU, sigmoid, and SiLU. Use it only when the goal is to alter the initial
+    parameter scales themselves.
+    """
+
+    return _apply_linear_interface_rescaling(
+        model,
+        log_scale_std=log_scale_std,
+        seed=seed,
+        mode=mode,
+        layers=layers,
+        validate_inferred_activations=False,
     )

@@ -1,6 +1,7 @@
 """A compact toolkit for configurable GD, SGD, and stochastic S-SAM experiments."""
 
 from .config import DEFAULT_CONFIG, normalize_config
+from .artifacts import RunArtifacts, create_run_artifacts
 from .data import (
     CALIFORNIA_HOUSING_FEATURES,
     build_dataset,
@@ -13,6 +14,7 @@ from .models import ConfigurableNet, MixedLinearNet, build_model, register_activ
 from .rescaling import (
     LinearRescalingResult,
     apply_function_preserving_linear_rescaling,
+    apply_linear_interface_rescaling,
 )
 from .objectives import estimate_regularized_objective
 from .schedules import (
@@ -94,6 +96,7 @@ __all__ = [
     "LinearPinnMetrics",
     "PoissonMetrics",
     "PoissonPointSets",
+    "RunArtifacts",
     "PolynomialPoissonPointSets",
     "SpaceTimePointSets",
     "TrainingResult",
@@ -106,7 +109,9 @@ __all__ = [
     "build_poisson_points",
     "build_learning_rate_policy",
     "build_schedule",
+    "create_run_artifacts",
     "apply_function_preserving_linear_rescaling",
+    "apply_linear_interface_rescaling",
     "estimate_regularized_objective",
     "evaluate_average_sharpness",
     "evaluate_average_sharpness_closure",

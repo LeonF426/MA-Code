@@ -90,6 +90,60 @@ def test_ssam_pinn_tracks_clean_and_gaussian_component_losses():
     assert result.history["clean_loss"][0] == pytest.approx(expected)
 
 
+@pytest.mark.parametrize(
+    ("sharpness_components", "expected_loss"),
+    [
+        (
+            ["pde"],
+            lambda history: (
+                2.0 * history["gaussian_pde_loss"][0]
+                + 3.0 * history["clean_boundary_loss"][0]
+            ),
+        ),
+        (
+            ["boundary"],
+            lambda history: (
+                2.0 * history["clean_pde_loss"][0]
+                + 3.0 * history["gaussian_boundary_loss"][0]
+            ),
+        ),
+    ],
+)
+def test_ssam_pinn_can_regularize_selected_loss_components(
+    sharpness_components, expected_loss
+):
+    config = _config()
+    config["training"]["steps"] = 1
+    config["pinn"]["sharpness_components"] = sharpness_components
+    result = train_poisson_pinn(
+        build_model(config).double(),
+        build_poisson_points(config),
+        config,
+    )
+
+    assert result.history["regularized_loss"][0] == pytest.approx(
+        expected_loss(result.history)
+    )
+    unselected_key = (
+        "gaussian_boundary_loss"
+        if sharpness_components == ["pde"]
+        else "gaussian_pde_loss"
+    )
+    assert math.isnan(result.history[unselected_key][0])
+
+
+def test_pinn_rejects_unknown_sharpness_component():
+    config = _config()
+    config["pinn"]["sharpness_components"] = ["initial"]
+
+    with pytest.raises(ValueError, match="sharpness_components"):
+        train_poisson_pinn(
+            build_model(config).double(),
+            build_poisson_points(config),
+            config,
+        )
+
+
 def test_pinn_sharpness_evaluation_supports_coordinate_derivatives():
     config = _config("sgd")
     model = build_model(config).double()
@@ -153,8 +207,10 @@ def test_pinn_history_plot_skips_unavailable_gaussian_curves():
         "clean_pde_loss": [1.5, 0.8],
         "clean_boundary_loss": [0.5, 0.2],
     }
-    figure = plot_pinn_training_history({"sgd": history})
+    figure = plot_pinn_training_history({"sgd": history}, smoothing_window=1)
     assert len(figure.axes) == 3
+    assert all(axis.get_yscale() == "log" for axis in figure.axes)
+    assert all(len(axis.lines) == 1 for axis in figure.axes)
 
 
 def test_poisson_solution_and_prediction_panels_share_color_scale():

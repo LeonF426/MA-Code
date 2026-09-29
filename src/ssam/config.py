@@ -54,7 +54,14 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
 
     if not isinstance(config, Mapping):
         raise TypeError("config must be a mapping")
-    unknown = set(config) - {"model", "training", "data", "visualization", "pinn"}
+    unknown = set(config) - {
+        "run",
+        "model",
+        "training",
+        "data",
+        "visualization",
+        "pinn",
+    }
     if unknown:
         raise ValueError(f"Unknown top-level config keys: {sorted(unknown)}")
 

@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 
 from ssam import (
     build_model,
+    create_run_artifacts,
     evaluate_average_sharpness,
     evaluate_average_sharpness_interpolation,
     plot_sharpness_interpolation,
@@ -42,6 +43,8 @@ INITIAL_FACTORS = (10.0, 0.1)
 TARGET_PRODUCT = 1.0
 
 CONFIG = {
+    # Optional human-readable prefix for the timestamped run directory.
+    "run": {"name": None},
     "model": {
         "name": "two_factor_scalar",
         "type": "mixed_linear",
@@ -171,8 +174,16 @@ def _plot_trajectories(trajectories, path: Path) -> None:
 
 def main() -> None:
     visualization = CONFIG["visualization"]
-    output_dir = Path(visualization["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+    configs = {}
+    for algorithm in ("sgd", "s_sam"):
+        configs[algorithm] = copy.deepcopy(CONFIG)
+        configs[algorithm]["training"]["algorithm"] = algorithm
+    run = create_run_artifacts(
+        {"run": copy.deepcopy(CONFIG["run"]), "algorithms": configs},
+        visualization["output_dir"],
+        "deep_linear_balance",
+    )
+    output_dir = run.output_dir
     training = CONFIG["training"]
     evaluation = visualization["evaluation"]
     scale = float(evaluation["sharpness_scale"])
@@ -181,16 +192,50 @@ def main() -> None:
     inputs = torch.ones((64, 1))
     targets = torch.ones((64, 1))
     dataset = TensorDataset(inputs, targets)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=len(dataset), shuffle=False)
+    loss_function = torch.nn.MSELoss()
     initial_model = build_unbalanced_model()
     initial_state = copy.deepcopy(initial_model.state_dict())
+
+    def evaluate_interpolation(sgd_model, ssam_model):
+        interpolation = evaluate_average_sharpness_interpolation(
+            sgd_model,
+            ssam_model,
+            loader,
+            loss_function,
+            scale,
+            interpolation_points=int(evaluation["interpolation_points"]),
+            samples=int(evaluation["interpolation_samples"]),
+            seed=int(evaluation["sharpness_seed"]),
+            antithetic=True,
+        )
+        (output_dir / "sharpness_interpolation.json").write_text(
+            json.dumps(asdict(interpolation), indent=2),
+            encoding="utf-8",
+        )
+        plot_sharpness_interpolation(
+            interpolation,
+            output_dir / "sharpness_interpolation.png",
+            endpoint_labels=("SGD", "S-SAM"),
+        )
+        return interpolation
+
+    models = {}
+    for algorithm in ("sgd", "s_sam"):
+        model = build_model(configs[algorithm])
+        model.load_state_dict(initial_state, strict=True)
+        models[algorithm] = model
+
+    print(
+        f"initial | exact average sharpness(scale={scale:.8g})="
+        f"{exact_average_sharpness(*INITIAL_FACTORS, scale):.8e}"
+    )
 
     results = {}
     trajectories = {}
     for algorithm in ("sgd", "s_sam"):
-        config = copy.deepcopy(CONFIG)
-        config["training"]["algorithm"] = algorithm
-        model = build_model(config)
-        model.load_state_dict(initial_state, strict=True)
+        config = configs[algorithm]
+        model = models[algorithm]
         trajectory = {
             "step": [0],
             "first_factor": [INITIAL_FACTORS[0]],
@@ -215,8 +260,6 @@ def main() -> None:
         )
         trajectories[algorithm] = trajectory
 
-    loader = torch.utils.data.DataLoader(dataset, batch_size=len(dataset), shuffle=False)
-    loss_function = torch.nn.MSELoss()
     metrics = {}
     for algorithm, result in results.items():
         first, second = factor_values(result.model)
@@ -240,21 +283,18 @@ def main() -> None:
             "average_sharpness_monte_carlo": asdict(measured),
         }
 
-    interpolation = evaluate_average_sharpness_interpolation(
+    evaluate_interpolation(
         results["sgd"].model,
         results["s_sam"].model,
-        loader,
-        loss_function,
-        scale,
-        interpolation_points=int(evaluation["interpolation_points"]),
-        samples=int(evaluation["interpolation_samples"]),
-        seed=int(evaluation["sharpness_seed"]),
-        antithetic=True,
     )
 
     theoretical_factor = math.sqrt(max(0.0, TARGET_PRODUCT - scale**2))
     report = {
         "initial_factors": INITIAL_FACTORS,
+        "initial_average_sharpness_exact": exact_average_sharpness(
+            *INITIAL_FACTORS,
+            scale,
+        ),
         "target_product": TARGET_PRODUCT,
         "sharpness_scale": scale,
         "theoretical_smoothed_optimum": {
@@ -268,24 +308,16 @@ def main() -> None:
         json.dumps(report, indent=2),
         encoding="utf-8",
     )
-    (output_dir / "sharpness_interpolation.json").write_text(
-        json.dumps(asdict(interpolation), indent=2),
-        encoding="utf-8",
-    )
     _plot_trajectories(trajectories, output_dir / "balance_trajectory.png")
-    plot_sharpness_interpolation(
-        interpolation,
-        output_dir / "sharpness_interpolation.png",
-        endpoint_labels=("SGD", "S-SAM"),
-    )
-
     for algorithm, values in metrics.items():
         print(
             f"{algorithm:>5} | factors=({values['first_factor']:.5f}, "
             f"{values['second_factor']:.5f}) | product={values['product']:.6f} | "
             f"clean={values['clean_loss_exact']:.3e} | "
-            f"sharpness={values['average_sharpness_exact']:.3e}"
+            f"sharpness(scale={scale:.8g})="
+            f"{values['average_sharpness_exact']:.3e}"
         )
+    run.complete()
     print(f"Artifacts written to {output_dir.resolve()}")
 
 

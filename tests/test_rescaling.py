@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 import torch
 from torch import nn
@@ -156,3 +158,48 @@ def test_configured_rescaling_rejects_nonhomogeneous_hidden_activations():
 
     with pytest.raises(ValueError, match="positively homogeneous hidden activations"):
         build_model(config)
+
+
+def test_configured_rescaling_can_explicitly_change_tanh_initial_function():
+    config = {
+        "model": {
+            "type": "mlp",
+            "input_dim": 2,
+            "output_dim": 1,
+            "depth": 3,
+            "width": 5,
+            "activation": "tanh",
+            "bias": True,
+            "parameter_init": {
+                "type": "xavier_uniform",
+                "bias": 0.1,
+                "rescaling": {
+                    "preserve_function": False,
+                    "mode": "layerwise",
+                    "log_scale_std": 1.0,
+                    "seed": 232,
+                },
+            },
+        }
+    }
+    unscaled_config = copy.deepcopy(config)
+    del unscaled_config["model"]["parameter_init"]["rescaling"]
+    inputs = torch.randn(11, 2)
+
+    torch.manual_seed(17)
+    unscaled = build_model(unscaled_config)
+    torch.manual_seed(17)
+    first = build_model(config)
+    torch.manual_seed(17)
+    second = build_model(config)
+
+    assert first.rescaling_result.mode == "layerwise"
+    assert first.rescaling_result.log_scale_std == pytest.approx(1.0)
+    assert first.rescaling_result.seed == 232
+    assert first.rescaling_result.preserve_function is False
+    assert not torch.equal(first.layers[0].weight, unscaled.layers[0].weight)
+    assert not torch.allclose(first(inputs), unscaled(inputs))
+    for first_parameter, second_parameter in zip(
+        first.parameters(), second.parameters()
+    ):
+        torch.testing.assert_close(first_parameter, second_parameter)

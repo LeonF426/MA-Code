@@ -37,6 +37,7 @@ def test_california_models_have_an_intercept_and_scalar_output():
     assert linear["layers"][0]["out_dim"] == 1
     assert linear["layers"][0]["bias"] is True
     assert linear["output_reduction"] == "none"
+    assert "rescaling" not in linear["parameter_init"]
 
     factorized = configs.BASE_CONFIG_DENSE["model"]
     assert factorized["layers"][-1]["out_dim"] == 1

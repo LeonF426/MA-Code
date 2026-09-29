@@ -53,8 +53,49 @@ python examples/deep_linear_balance.py
 ```
 
 The example compares measured sharpness with its exact formula and writes factor,
-loss, balance, and interpolation diagnostics beneath
+loss, balance, and interpolation diagnostics to a unique run directory beneath
 `outputs/deep_linear_balance/`.
+
+## Run tracking and comparisons
+
+Every runnable example creates a new directory instead of overwriting the
+previous result. A typical Poisson run looks like this:
+
+```text
+outputs/poisson_pinn/
+├── runs.jsonl
+└── pde-only_20260925-153012_a21d94f57c/
+    ├── config.json
+    ├── metrics.json
+    ├── training_history.png
+    ├── solutions.png
+    ├── sharpness_interpolation.json
+    └── sharpness_interpolation.png
+```
+
+The run ID contains an optional label, the start time, and the first ten
+characters of the saved configuration's SHA-256 digest. To add a readable label,
+set the entry provided in each example before starting it:
+
+```python
+"run": {"name": "pde-only"},
+```
+
+`config.json` is the exact effective configuration for that execution, and
+`metrics.json` holds its numerical report. The plots and interpolation results
+in the same directory therefore belong unambiguously to that configuration.
+
+Each completed run is also appended to `runs.jsonl` in the example's output
+root. Every line contains the run ID, paths to its configuration and metrics,
+and an embedded copy of its metrics. This makes the runs directly loadable for
+comparison, for example:
+
+```python
+import pandas as pd
+
+runs = pd.read_json("outputs/poisson_pinn/runs.jsonl", lines=True)
+print(runs[["run_id", "config_sha256", "metrics_file"]])
+```
 
 Select constant or tamed learning rates directly in `CONFIG["training"]`.
 
@@ -144,8 +185,11 @@ diagonal layers, mixed dense/diagonal chains, and biases. The same operation is
 available as `apply_function_preserving_linear_rescaling`; custom models can pass
 their ordered linear layers explicitly. ReLU and LeakyReLU work because they are
 positively homogeneous. Non-homogeneous activations such as GELU, tanh, sigmoid,
-and SiLU are rejected because the same transformation would change the model's
-function. Apply it before creating an optimizer.
+and SiLU are rejected by default because the same transformation would change
+the model's function. If changing the initialized function is intentional, set
+`rescaling.preserve_function: false`; this applies the same deterministic linear
+interface rescaling without the homogeneity restriction. Apply either form
+before creating an optimizer.
 
 ## Algorithms and schedules
 
@@ -218,6 +262,17 @@ plot_checkpoint_embedding(result, method="tsne", path="outputs/trajectory.png")
 plot_checkpoint_embedding(result, method="pca", path="outputs/trajectory_pca.png")
 ```
 
+Training-history plots retain faint per-step measurements while emphasizing an
+automatic rolling-median trend. Loss and layer-balance panels use logarithmic
+scales when appropriate and report robust start, final, best, and improvement
+statistics. Empty panels (such as layer balance for a one-layer model) are
+omitted. Loss panels omit the first 50 training steps by default so initialization
+transients do not determine the visible y-axis range; summaries use only the
+displayed values. Clean and regularized objectives use different colors, line
+styles, endpoint markers, and a shaded gap. Automatic smoothing uses at most 15
+steps. Set `loss_start_step=None` to include the warm-up. Override smoothing with
+`smoothing_window=9`, or use `smoothing_window=1` to show only the raw curve.
+
 The t-SNE plot embeds saved parameter checkpoints and colors them by loss. It is
 useful for discovering clusters, but t-SNE distorts distance and therefore is not a
 literal loss landscape. `plot_loss_landscape` is the more faithful alternative: it
@@ -260,9 +315,12 @@ plot_sharpness_interpolation(
 
 Every interpolation point uses the same Gaussian directions, reducing Monte
 Carlo noise in comparisons along the path. The evaluator restores the first
-model after completion. The paired PINN examples additionally write
-`sharpness_interpolation.json` and `sharpness_interpolation.png`; their
-derivative-based closures set `requires_grad=True`.
+model after completion. The paired examples print the scalar sharpness and its
+evaluation scale for their shared initialization, then evaluate interpolation
+only between the trained SGD/S-SAM endpoints. The interpolation figure title
+also reports that scale. The examples write `sharpness_interpolation.json` and
+`sharpness_interpolation.png`; the PINN examples use derivative-based closures
+with `requires_grad=True`.
 
 For ordinary supervised datasets,
 `evaluate_average_sharpness_interpolation` accepts a `DataLoader` and loss
@@ -330,10 +388,11 @@ factorized model uses Xavier initialization instead of the former all-ones
 retain a moderate function-preserving rescaling, while the normalized S-SAM
 radius is 0.05 rather than the former radius of 2.0. The example evaluates
 held-out MSE, RMSE, MAE, R-squared, prediction mean, and target mean; prints
-held-out interpolation tables; and writes metrics, training histories,
-and SGD-to-S-SAM sharpness interpolation JSON/PNG artifacts beneath
-`outputs/california/`. Rescaling severity and interpolation sampling are
-configured in [`examples/model_config.py`](examples/model_config.py).
+the initial sharpness values and held-out interpolation tables; and writes
+metrics, training histories, and post-training SGD-to-S-SAM sharpness
+interpolation JSON/PNG artifacts beneath `outputs/california/`. Rescaling
+severity and interpolation sampling are configured in
+[`examples/model_config.py`](examples/model_config.py).
 
 ### 2D Poisson PINN
 
@@ -346,14 +405,36 @@ u*(x,y) = sin(pi*x) sin(pi*y)
 ```
 
 It uses a configurable tanh MLP and the complete weighted PDE-residual plus
-boundary loss. Collocation coordinates are created once and captured by the loss
-closure, so every parameter perturbation in an S-SAM update sees the same points.
+boundary loss. Its initialization opts into non-function-preserving layerwise
+rescaling because tanh is smooth enough for the PDE's second derivatives but is
+not positively homogeneous. Collocation coordinates are created once and
+captured by the loss closure, so every parameter perturbation in an S-SAM update
+sees the same points.
 SGD and S-SAM start from an identical state and share collocation/evaluation
 points, evaluation scale, and Gaussian evaluation noise. The example writes
 relative L2 error, PDE-residual RMSE, boundary RMSE, and average sharpness with a
 Monte Carlo confidence interval to JSON. It also plots exact/predicted/error
 fields and clean versus Gaussian-averaged loss histories. Missing Gaussian curves
 (for example for SGD) are skipped.
+
+Every PINN example can choose which loss components receive S-SAM's Gaussian
+average-sharpness regularization:
+
+```python
+"pinn": {
+    "pde_weight": 1.0,
+    "boundary_weight": 10.0,
+    "sharpness_components": ["pde"],  # or ["boundary"], or both
+}
+```
+
+Selected components contribute the Monte Carlo mean gradient at perturbed
+parameters. Unselected components contribute their ordinary clean gradient at
+the central parameters. Thus `["pde"]` optimizes Gaussian-averaged PDE loss plus
+clean boundary loss, while `["boundary"]` does the reverse. For the space-time
+examples, `boundary` includes their combined initial/boundary-condition loss.
+The default is both components. SGD always uses the complete clean objective.
+Training-history plots omit the Gaussian curve for clean-only components.
 
 The reusable API is `build_poisson_points`, `train_poisson_pinn`,
 `evaluate_poisson_pinn`, `plot_poisson_solutions`, and

@@ -11,7 +11,10 @@ from torch import nn
 
 from .config import model_config
 from .layers import DiagLinear
-from .rescaling import apply_function_preserving_linear_rescaling
+from .rescaling import (
+    apply_function_preserving_linear_rescaling,
+    apply_linear_interface_rescaling,
+)
 
 
 _ACTIVATIONS: dict[str, Callable[[], nn.Module]] = {
@@ -238,7 +241,13 @@ def build_model(config: Mapping[str, Any]) -> nn.Module:
         if rescaling:
             options = {} if rescaling is True else dict(rescaling)
             if bool(options.pop("enabled", True)):
-                model.rescaling_result = apply_function_preserving_linear_rescaling(
+                preserve_function = bool(options.pop("preserve_function", True))
+                rescaling_function = (
+                    apply_function_preserving_linear_rescaling
+                    if preserve_function
+                    else apply_linear_interface_rescaling
+                )
+                model.rescaling_result = rescaling_function(
                     model,
                     log_scale_std=float(options.pop("log_scale_std", 1.0)),
                     seed=int(options.pop("seed", 0)),

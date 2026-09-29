@@ -113,6 +113,23 @@ def test_exact_polynomial_poisson_has_zero_loss():
     assert float(losses["loss"].detach()) == pytest.approx(0.0, abs=1e-30)
 
 
+def test_linear_pinn_can_regularize_only_boundary_loss():
+    config = _config(3)
+    config["training"]["steps"] = 1
+    config["pinn"]["sharpness_components"] = ["boundary"]
+    result = train_polynomial_poisson_pinn(
+        build_model(config).double(),
+        build_polynomial_poisson_points(config),
+        config,
+    )
+
+    expected = (
+        2.0 * result.history["clean_pde_loss"][0]
+        + 3.0 * result.history["gaussian_boundary_loss"][0]
+    )
+    assert result.history["regularized_loss"][0] == pytest.approx(expected)
+
+
 def test_exact_polynomial_heat_solution_has_zero_loss():
     points = build_heat_points(_config(2))
     model = FixedFeatureCoefficients([1.0, 2.0])

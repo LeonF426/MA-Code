@@ -102,3 +102,5 @@ def test_supervised_interpolation_wrapper_and_plot():
 
     assert [point.clean_loss for point in result.points] == pytest.approx([0.0, 1.0])
     assert len(figure.axes) == 2
+    assert figure._suptitle is not None
+    assert "scale = 0" in figure._suptitle.get_text()

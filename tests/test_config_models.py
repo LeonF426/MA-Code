@@ -13,6 +13,14 @@ def test_config_normalizes_ssam_alias_and_defaults():
     assert config["training"]["perturbation"]["samples"] == 1
 
 
+def test_config_accepts_run_metadata():
+    config = normalize_config({
+        "run": {"name": "boundary-only"},
+        "model": {"name": "mlp", "input_dim": 2, "depth": 1},
+    })
+    assert config["run"]["name"] == "boundary-only"
+
+
 def test_mlp_shape_and_identity_activation():
     model = build_model({
         "name": "mlp",

@@ -10,7 +10,12 @@ from __future__ import annotations
 import copy
 
 
-SEED = 102
+SEED = 10254
+
+RUN_CONFIG = {
+    # Optional human-readable prefix for the timestamped run directory.
+    "name": None,
+}
 
 DATA_CONFIG = {
     "name": "california_housing",
@@ -26,25 +31,25 @@ DATA_CONFIG = {
     "standardize": True,
     "standardize_target": False,
     "download": True,
-    "seed": 7,
+    "seed": 78,
 }
 
 TRAINING_CONFIG = {
     "algorithm": "sgd",  # replaced for every matched pair
-    "steps": 1000,
-    "batch_size": 256,
+    "steps": 2000,
+    "batch_size": 64,
     "learning_rate": {
         "name": "tamed",
         "type": "sgd",
-        "inserted_lr": {"name": "constant", "value": 0.05},
+        "inserted_lr": {"name": "constant", "value": 0.5},
     },
     # A radius of 2 was larger than the useful parameter scale for these models.
     # Normalized noise with radius 0.05 is a deliberately modest regularizer.
-    "sharpness_scale": {"name": "constant", "value": 0.05},
+    "sharpness_scale": {"name": "inverse_time", "initial": 0.5, "alpha": 0.5, "floor": 0.01},
     "perturbation": {
         "distribution": "gaussian",
-        "samples": 8,
-        "normalized": True,
+        "samples": 24,
+        "normalized": False,
         "antithetic": True,
     },
     "optimizer": {"name": "sgd", "momentum": 0.0},
@@ -57,11 +62,11 @@ TRAINING_CONFIG = {
 VISUALIZATION_CONFIG = {
     "output_dir": "outputs/california",
     "interpolation": {
-        "sharpness_scale": 0.05,
-        "sharpness_samples": 64,
-        "sharpness_seed": 10023,
-        "interpolation_points": 11,
-        "normalized": True,
+        "sharpness_scale": 0.5,
+        "sharpness_samples": 128,
+        "sharpness_seed": 100235,
+        "interpolation_points": 7,
+        "normalized": False,
         "antithetic": True,
     },
 }
@@ -69,6 +74,7 @@ VISUALIZATION_CONFIG = {
 
 def _experiment(model: dict) -> dict:
     return {
+        "run": copy.deepcopy(RUN_CONFIG),
         "model": model,
         "data": copy.deepcopy(DATA_CONFIG),
         "training": copy.deepcopy(TRAINING_CONFIG),
@@ -87,6 +93,7 @@ BASE_CONFIG_LINEAR = _experiment(
         "output_activation": "identity",
         "output_reduction": "none",
         "bias": True,
+        # A single affine layer has no hidden interface to rescale.
         "parameter_init": {"type": "xavier_uniform", "bias": 0.0},
     }
 )
@@ -108,7 +115,7 @@ BASE_CONFIG = _experiment(
             "type": "identity",
             "bias": 0.0,
             "rescaling": {
-                "enabled": True,
+                "preserve_function": False,
                 "mode": "layerwise",
                 "log_scale_std": 0.5,
                 "seed": SEED,
@@ -139,8 +146,8 @@ BASE_CONFIG_DENSE = _experiment(
             "type": "xavier_uniform",
             "bias": 0.0,
             "rescaling": {
-                "enabled": True,
-                "mode": "neuronwise",
+                "preserve_function": False,
+                "mode": "layerwise",
                 "log_scale_std": 0.5,
                 "seed": SEED,
             },

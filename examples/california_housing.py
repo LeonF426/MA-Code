@@ -13,8 +13,11 @@ from torch.utils.data import DataLoader, Dataset
 
 from ssam import (
     AverageSharpnessInterpolationResult,
+    AverageSharpnessResult,
     build_dataset,
     build_model,
+    create_run_artifacts,
+    evaluate_average_sharpness,
     evaluate_average_sharpness_interpolation,
     plot_sharpness_interpolation,
     plot_training_history,
@@ -112,7 +115,10 @@ def _print_interpolation_table(
     label: str,
     result: AverageSharpnessInterpolationResult,
 ) -> None:
-    print(f"\n{label}: held-out interpolation (t=0 SGD, t=1 S-SAM)")
+    print(
+        f"\n{label}: held-out interpolation "
+        f"(scale={result.sharpness_scale:.8g}, t=0 SGD, t=1 S-SAM)"
+    )
     print(
         f"{'t':>6} {'clean':>14} {'Gaussian mean':>14} "
         f"{'sharpness':>14} {'95% radius':>14}"
@@ -168,18 +174,45 @@ def _train_pair(
     test_data: Dataset,
     evaluation_loader: DataLoader,
     output_dir: Path,
-) -> tuple[dict[str, object], dict[str, dict[str, float]], AverageSharpnessInterpolationResult]:
+) -> tuple[
+    dict[str, object],
+    dict[str, dict[str, float]],
+    AverageSharpnessInterpolationResult,
+    AverageSharpnessResult,
+]:
     torch.manual_seed(SEED)
     reference = build_model(configs["sgd"])
     initial_state = copy.deepcopy(reference.state_dict())
+    models = {}
+    for algorithm in ("sgd", "s_sam"):
+        model = build_model(configs[algorithm])
+        model.load_state_dict(initial_state, strict=True)
+        models[algorithm] = model
+
+    options = configs["s_sam"]["visualization"]["interpolation"]
+    initial_sharpness = evaluate_average_sharpness(
+        models["sgd"],
+        evaluation_loader,
+        scalar_regression_mse,
+        sharpness_scale=float(options["sharpness_scale"]),
+        samples=int(options["sharpness_samples"]),
+        seed=int(options["sharpness_seed"]),
+        antithetic=bool(options.get("antithetic", True)),
+        normalized=bool(options.get("normalized", False)),
+    )
+    print(
+        f"{label} initial | average sharpness"
+        f"(scale={initial_sharpness.sharpness_scale:.8g})="
+        f"{initial_sharpness.average_sharpness:.8e}"
+    )
+
     results = {}
     scores = {}
 
     for algorithm in ("sgd", "s_sam"):
         print("----------------------------Next Model----------------------------------")
         config = configs[algorithm]
-        model = build_model(config)
-        model.load_state_dict(initial_state, strict=True)
+        model = models[algorithm]
         result = train(model, training_data, config)
         results[algorithm] = result
 
@@ -207,7 +240,7 @@ def _train_pair(
         configs["s_sam"],
         output_dir,
     )
-    return results, scores, interpolation
+    return results, scores, interpolation, initial_sharpness
 
 
 def _algorithm_configs(base_config: dict) -> dict[str, dict]:
@@ -228,8 +261,24 @@ def _algorithm_configs(base_config: dict) -> dict[str, dict]:
 
 
 def main() -> None:
-    output_dir = Path(BASE_CONFIG["visualization"]["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+    experiment_configs = {
+        "california_linear": _algorithm_configs(BASE_CONFIG_LINEAR),
+        "california_3L_diag": {
+            algorithm: config_for(3, algorithm)
+            for algorithm in ("sgd", "s_sam")
+        },
+        "california_dense": _algorithm_configs(BASE_CONFIG_DENSE),
+    }
+    effective_config = {
+        "run": copy.deepcopy(BASE_CONFIG["run"]),
+        "experiments": experiment_configs,
+    }
+    run = create_run_artifacts(
+        effective_config,
+        BASE_CONFIG["visualization"]["output_dir"],
+        "california_housing",
+    )
+    output_dir = run.output_dir
     training_data = build_dataset(BASE_CONFIG["data"], train=True)
     test_data = build_dataset(BASE_CONFIG["data"], train=False)
     evaluation_loader = DataLoader(
@@ -240,24 +289,23 @@ def main() -> None:
     )
 
     summaries = {}
-
-    _, linear_scores, _ = _train_pair(
+    _, linear_scores, _, linear_initial = _train_pair(
         "california_linear",
-        _algorithm_configs(BASE_CONFIG_LINEAR),
+        experiment_configs["california_linear"],
         training_data,
         test_data,
         evaluation_loader,
         output_dir,
     )
-    summaries["california_linear"] = linear_scores
+    summaries["california_linear"] = {
+        "initial_average_sharpness": asdict(linear_initial),
+        "algorithms": linear_scores,
+    }
 
     for depth in (3,):
         label = f"california_{depth}L_diag"
-        configs = {
-            algorithm: config_for(depth, algorithm)
-            for algorithm in ("sgd", "s_sam")
-        }
-        _, scores, _ = _train_pair(
+        configs = experiment_configs[label]
+        _, scores, _, initial_sharpness = _train_pair(
             label,
             configs,
             training_data,
@@ -265,22 +313,29 @@ def main() -> None:
             evaluation_loader,
             output_dir,
         )
-        summaries[label] = scores
+        summaries[label] = {
+            "initial_average_sharpness": asdict(initial_sharpness),
+            "algorithms": scores,
+        }
 
-    _, dense_scores, _ = _train_pair(
+    _, dense_scores, _, dense_initial = _train_pair(
         "california_dense",
-        _algorithm_configs(BASE_CONFIG_DENSE),
+        experiment_configs["california_dense"],
         training_data,
         test_data,
         evaluation_loader,
         output_dir,
     )
-    summaries["california_dense"] = dense_scores
+    summaries["california_dense"] = {
+        "initial_average_sharpness": asdict(dense_initial),
+        "algorithms": dense_scores,
+    }
 
     (output_dir / "metrics.json").write_text(
         json.dumps(summaries, indent=2),
         encoding="utf-8",
     )
+    run.complete()
     print(f"\nMetrics and plots written to {output_dir.resolve()}")
 
 

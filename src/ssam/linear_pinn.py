@@ -11,6 +11,10 @@ from torch import nn
 
 from .average_sharpness import AverageSharpnessResult, evaluate_average_sharpness_closure
 from .config import training_config
+from .pinn_objective import (
+    configure_selective_pinn_loss,
+    resolve_sharpness_components,
+)
 from .schedules import build_learning_rate_policy, build_schedule
 from .trainers import TrainingResult, _device, _inferred_policy_shape
 from .update_rules import build_update_rule
@@ -435,7 +439,17 @@ def _train_fixed_pinn(
         dtype = next(model.parameters()).dtype
     except StopIteration as exc:
         raise ValueError("The model has no trainable parameters") from exc
-    closure = closure_factory(device, dtype)
+    base_closure = closure_factory(device, dtype)
+    pde_weight, boundary_weight = _pinn_weights(config)
+    sharpness_components = resolve_sharpness_components(config)
+
+    def closure() -> dict[str, torch.Tensor]:
+        return configure_selective_pinn_loss(
+            base_closure(),
+            pde_weight=pde_weight,
+            boundary_weight=boundary_weight,
+            sharpness_components=sharpness_components,
+        )
 
     dimension, depth = _inferred_policy_shape(model, config)
     learning_rate_policy = build_learning_rate_policy(
@@ -462,6 +476,11 @@ def _train_fixed_pinn(
         "sharpness_scale": [],
     }
     result = TrainingResult(model=model, history=history, config=resolved)
+    if resolved["algorithm"] == "s_sam":
+        print(
+            "S-SAM PINN sharpness components: "
+            + ", ".join(sorted(sharpness_components))
+        )
     for step in range(steps):
         scale = float(sharpness_schedule(step))
         outcome = update_rule.step(
@@ -483,10 +502,10 @@ def _train_fixed_pinn(
             "clean_boundary_loss": outcome.clean_components["boundary_loss"],
             "gaussian_pde_loss": outcome.regularized_components.get(
                 "pde_loss", float("nan")
-            ),
+            ) if "pde" in sharpness_components else float("nan"),
             "gaussian_boundary_loss": outcome.regularized_components.get(
                 "boundary_loss", float("nan")
-            ),
+            ) if "boundary" in sharpness_components else float("nan"),
             "learning_rate": outcome.learning_rate,
             "sharpness_scale": scale,
         }

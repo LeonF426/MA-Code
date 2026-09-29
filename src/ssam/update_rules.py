@@ -16,6 +16,41 @@ from .schedules import LearningRatePolicy
 
 LossValue = torch.Tensor | Mapping[str, torch.Tensor]
 LossClosure = Callable[[], LossValue]
+_SELECTIVE_LOSS_KEYS = {"sharpness_loss", "clean_only_loss"}
+
+
+@dataclass(frozen=True)
+class _LossTerms:
+    total: torch.Tensor
+    components: dict[str, torch.Tensor]
+    sharpness: torch.Tensor
+    clean_only: torch.Tensor | None
+
+
+def _split_loss_terms(value: LossValue) -> _LossTerms:
+    """Resolve total, perturbed, clean-only, and diagnostic loss terms."""
+
+    if isinstance(value, torch.Tensor):
+        return _LossTerms(value, {}, value, None)
+    if not isinstance(value, Mapping):
+        raise TypeError("The loss closure must return a tensor or a mapping")
+    objective_key = "loss" if "loss" in value else "total_loss"
+    if objective_key not in value:
+        raise ValueError("A structured loss must contain 'loss' or 'total_loss'")
+    total = value[objective_key]
+    sharpness = value.get("sharpness_loss", total)
+    clean_only = value.get("clean_only_loss")
+    components = {
+        key: component
+        for key, component in value.items()
+        if key != objective_key and key not in _SELECTIVE_LOSS_KEYS
+    }
+    tensors = [total, sharpness, *components.values()]
+    if clean_only is not None:
+        tensors.append(clean_only)
+    if any(not isinstance(tensor, torch.Tensor) for tensor in tensors):
+        raise TypeError("All structured loss values must be tensors")
+    return _LossTerms(total, components, sharpness, clean_only)
 
 
 def _split_loss(value: LossValue) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -26,20 +61,8 @@ def _split_loss(value: LossValue) -> tuple[torch.Tensor, dict[str, torch.Tensor]
     their relatively expensive coordinate-derivative calculation.
     """
 
-    if isinstance(value, torch.Tensor):
-        return value, {}
-    if not isinstance(value, Mapping):
-        raise TypeError("The loss closure must return a tensor or a mapping")
-    objective_key = "loss" if "loss" in value else "total_loss"
-    if objective_key not in value:
-        raise ValueError("A structured loss must contain 'loss' or 'total_loss'")
-    loss = value[objective_key]
-    components = {key: component for key, component in value.items() if key != objective_key}
-    if not isinstance(loss, torch.Tensor) or any(
-        not isinstance(component, torch.Tensor) for component in components.values()
-    ):
-        raise TypeError("All structured loss values must be tensors")
-    return loss, components
+    terms = _split_loss_terms(value)
+    return terms.total, terms.components
 
 
 def _scalar_values(components: Mapping[str, torch.Tensor]) -> dict[str, float]:
@@ -365,11 +388,46 @@ class StochasticSharpnessUpdate:
             for buffer in buffers
         ]
 
-        # Evaluate the ordinary, unperturbed loss for logging. Gradients are not
-        # needed here because the update uses the regularized gradient below.
+        # Evaluate the ordinary, unperturbed loss for logging. A selective
+        # objective may additionally request a clean-only gradient contribution.
+        clean_only_gradients = [
+            torch.zeros_like(parameter)
+            for parameter in parameters
+        ]
+        clean_only_loss = 0.0
         try:
             with torch.set_grad_enabled(self.loss_requires_grad):
-                clean_loss_tensor, clean_component_tensors = _split_loss(loss_closure())
+                clean_terms = _split_loss_terms(loss_closure())
+
+            if clean_terms.total.numel() != 1:
+                raise ValueError(
+                    "The S-SAM loss closure must return a scalar loss"
+                )
+            if not torch.isfinite(clean_terms.total).item():
+                raise FloatingPointError(
+                    "The clean loss is already non-finite before applying an "
+                    "S-SAM perturbation: "
+                    f"clean_loss={clean_terms.total.item()}"
+                )
+
+            clean_loss = float(clean_terms.total.item())
+            clean_components = _scalar_values(clean_terms.components)
+
+            if clean_terms.clean_only is not None:
+                if clean_terms.clean_only.numel() != 1:
+                    raise ValueError("clean_only_loss must be scalar")
+                if not torch.isfinite(clean_terms.clean_only).item():
+                    raise FloatingPointError("clean_only_loss is non-finite")
+                if not clean_terms.clean_only.requires_grad:
+                    raise ValueError(
+                        "Selective S-SAM requires training.loss_requires_grad=true"
+                    )
+                clean_only_loss = float(clean_terms.clean_only.detach().item())
+                self.optimizer.zero_grad(set_to_none=True)
+                clean_terms.clean_only.backward()
+                for target, parameter in zip(clean_only_gradients, parameters):
+                    if parameter.grad is not None:
+                        target.copy_(parameter.grad.detach())
         finally:
             # Undo any buffer changes caused by the clean forward pass.
             with torch.no_grad():
@@ -379,21 +437,8 @@ class StochasticSharpnessUpdate:
                 ):
                     buffer.copy_(clean_buffer)
 
-        if clean_loss_tensor.numel() != 1:
-            raise ValueError(
-                "The S-SAM loss closure must return a scalar loss"
-            )
-
-        if not torch.isfinite(clean_loss_tensor).item():
-            raise FloatingPointError(
-                "The clean loss is already non-finite before applying an "
-                "S-SAM perturbation: "
-                f"clean_loss={clean_loss_tensor.item()}"
-            )
-
-        clean_loss = float(clean_loss_tensor.item())
-        clean_components = _scalar_values(clean_component_tensors)
-        del clean_loss_tensor, clean_component_tensors
+        self.optimizer.zero_grad(set_to_none=True)
+        del clean_terms
 
         # Online means avoid storing one complete gradient for every Gaussian
         # sample. Memory use therefore does not grow with self.samples.
@@ -446,7 +491,9 @@ class StochasticSharpnessUpdate:
 
                 # This is a perturbed evaluation of the loss. Calling backward
                 # produces a sample of the regularized-objective gradient.
-                loss, component_tensors = _split_loss(loss_closure())
+                terms = _split_loss_terms(loss_closure())
+                loss = terms.sharpness
+                component_tensors = terms.components
                 # print(f"evaluated loss in SSAM update: {loss.item()}")
 
                 if loss.numel() != 1:
@@ -532,14 +579,18 @@ class StochasticSharpnessUpdate:
                 ):
                     buffer.copy_(clean_buffer)
 
-        # Install the Monte Carlo mean gradient on the restored parameters.
+        # Combine the clean-only objective with the Gaussian-averaged objective.
+        mean_loss += clean_only_loss
+
+        # Install the combined gradient on the restored parameters.
         self.optimizer.zero_grad(set_to_none=True)
 
-        for parameter, mean_gradient in zip(
+        for parameter, mean_gradient, clean_gradient in zip(
             parameters,
             mean_gradients,
+            clean_only_gradients,
         ):
-            parameter.grad = mean_gradient
+            parameter.grad = mean_gradient + clean_gradient
 
         # If clipping is configured, clip before measuring ||g||. This makes
         # the tamed denominator use the gradient actually applied below.
