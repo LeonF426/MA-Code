@@ -43,8 +43,9 @@ CONFIG = {
                 "preserve_function": False,
                 "mode": "layerwise",
                 "log_scale_std": 0.04,
-                "seed": 2372,
+                "seed": 272442342,
             },
+            "seed": 123939
         },
     },
     "data": {
@@ -52,7 +53,7 @@ CONFIG = {
         "interior_points": 512,
         "boundary_points": 256,
         "evaluation_resolution": 51,
-        "seed": 137,
+        "seed": 1753,
     },
     "pinn": {
         "pde_weight": 1.0,
@@ -63,23 +64,23 @@ CONFIG = {
         "evaluation": {
             "sharpness_scale": 1e-1,
             "sharpness_samples": 100,
-            "sharpness_seed": 10023,
+            "sharpness_seed": 1023,
             "antithetic": True,
             "interpolation_points": 11,
             "interpolation_samples": 32,
         },
     },
     "training": {
-        "steps": 1000,
-        "batch_size": 512,
+        "steps": 1200,
+        "batch_size": 128,
         "learning_rate": {"name": "tamed",
                           "type": "sgd",
-                          "inserted_lr":{"name": "constant", "value": 1e-3}},
+                          "inserted_lr":{"name": "constant", "value": 2e-3}},
         "sharpness_scale": {
             "name": "inverse_time",
             "initial": 1,
             "power": 0.5,
-            "floor": 0.001,
+            "floor": 0.0,
         },
         "perturbation": {
             "distribution": "gaussian",
@@ -89,7 +90,7 @@ CONFIG = {
             "preserve_buffers": True,
         },
         "optimizer": {"name": "sgd", "momentum": 0.0},
-        "seed": 23,
+        "seed": 232413,
         "device": "auto",
     },
 }
