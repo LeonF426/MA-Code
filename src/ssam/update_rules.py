@@ -103,6 +103,16 @@ class UpdateRule(Protocol):
 
 def _build_optimizer(parameters, config: Mapping[str, Any]) -> torch.optim.Optimizer:
     name = str(config.get("name", "sgd")).lower()
+    allowed = {
+        "sgd": {"name", "weight_decay", "momentum", "nesterov"},
+        "adam": {"name", "weight_decay", "betas"},
+        "adamw": {"name", "weight_decay", "betas"},
+    }
+    if name not in allowed:
+        raise ValueError(f"Unknown optimizer {name!r}")
+    unknown = set(config) - allowed[name]
+    if unknown:
+        raise ValueError(f"Unknown {name} optimizer keys: {sorted(unknown)}")
     common = {
         "lr": 1.0,
         "weight_decay": float(config.get("weight_decay", 0.0)),
@@ -126,7 +136,7 @@ def _build_optimizer(parameters, config: Mapping[str, Any]) -> torch.optim.Optim
             betas=tuple(config.get("betas", (0.9, 0.999))),
             **common,
         )
-    raise ValueError(f"Unknown optimizer {name!r}")
+    raise AssertionError("Validated optimizer was not constructed")
 
 
 def _set_learning_rate(optimizer: torch.optim.Optimizer, value: float) -> None:
@@ -276,6 +286,21 @@ class StochasticSharpnessUpdate:
         )
 
         perturbation = config.get("perturbation", {})
+        allowed_perturbation = {
+            "distribution",
+            "samples",
+            "normalized",
+            "antithetic",
+            "preserve_buffers",
+            "max_grad_norm",
+            "seed",
+        }
+        unknown_perturbation = set(perturbation) - allowed_perturbation
+        if unknown_perturbation:
+            raise ValueError(
+                "Unknown training.perturbation keys: "
+                f"{sorted(unknown_perturbation)}"
+            )
 
         # Number of Monte Carlo samples used to approximate the Gaussian
         # expectation defining the regularized objective.
@@ -291,6 +316,14 @@ class StochasticSharpnessUpdate:
         # evaluating perturbed models.
         self.preserve_buffers = bool(
             perturbation.get("preserve_buffers", True)
+        )
+        try:
+            parameter_device = next(model.parameters()).device
+        except StopIteration as exc:
+            raise ValueError("The model has no trainable parameters") from exc
+        self.noise_generator = torch.Generator(device=parameter_device)
+        self.noise_generator.manual_seed(
+            int(perturbation.get("seed", config.get("seed", 0)))
         )
 
         # PINN losses need autograd enabled even when only their clean value is
@@ -461,6 +494,7 @@ class StochasticSharpnessUpdate:
                         parameters,
                         sharpness_scale,
                         normalized=self.normalized,
+                        generator=self.noise_generator,
                     )
                     sign = 1.0
                 else:

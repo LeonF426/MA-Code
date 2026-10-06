@@ -206,6 +206,45 @@ def test_linear_pinn_ssam_training_and_evaluation(
     assert metrics.average_sharpness.average_sharpness == pytest.approx(0.0)
 
 
+@pytest.mark.parametrize(
+    ("dimension", "build_points", "train_pinn", "expected_groups"),
+    [
+        (
+            3,
+            build_advection_points,
+            train_advection_pinn,
+            {"interior": 4, "initial": 3, "boundary": 4},
+        ),
+        (
+            3,
+            build_polynomial_poisson_points,
+            train_polynomial_poisson_pinn,
+            {"interior": 4, "boundary": 4},
+        ),
+        (
+            2,
+            build_heat_points,
+            train_heat_pinn,
+            {"interior": 4, "initial": 3, "boundary": 4},
+        ),
+    ],
+)
+def test_linear_pinn_trainers_use_configured_minibatches(
+    dimension,
+    build_points,
+    train_pinn,
+    expected_groups,
+):
+    config = _config(dimension, "sgd")
+    config["training"]["steps"] = 1
+    config["training"]["batch_size"] = 4
+    result = train_pinn(build_model(config).double(), build_points(config), config)
+
+    assert result.config["effective_batch_sizes"] == expected_groups
+    for name, size in expected_groups.items():
+        assert result.history[f"{name}_batch_size"] == [size]
+
+
 def test_interpolation_sharpness_supports_coordinate_derivatives():
     config = _config(3, "sgd")
     points = build_polynomial_poisson_points(config)

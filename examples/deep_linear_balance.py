@@ -36,6 +36,7 @@ from ssam import (
     evaluate_average_sharpness_interpolation,
     plot_sharpness_interpolation,
     train,
+    write_training_history,
 )
 
 
@@ -56,7 +57,7 @@ CONFIG = {
         "output_activation": "identity",
         "output_reduction": "none",
         "bias": False,
-        "parameter_init": {"type": "ones"},
+        "parameter_init": {"type": "ones", "seed": 37},
     },
     "training": {
         "steps": 5000,
@@ -69,11 +70,13 @@ CONFIG = {
             "normalized": False,
             "antithetic": True,
             "preserve_buffers": True,
+            "seed": 37,
         },
         "optimizer": {"name": "sgd", "momentum": 0.0},
         "loss": "mse",
         "checkpoint_every": 0,
         "seed": 37,
+        "batch_seed": 37,
         "device": "cpu",
     },
     "visualization": {
@@ -180,7 +183,7 @@ def main() -> None:
         configs[algorithm]["training"]["algorithm"] = algorithm
     run = create_run_artifacts(
         {"run": copy.deepcopy(CONFIG["run"]), "algorithms": configs},
-        visualization["output_dir"],
+        Path(__file__).resolve().parents[1] / visualization["output_dir"],
         "deep_linear_balance",
     )
     output_dir = run.output_dir
@@ -260,6 +263,8 @@ def main() -> None:
         )
         trajectories[algorithm] = trajectory
 
+    write_training_history(results, output_dir / "training_history.json")
+
     metrics = {}
     for algorithm, result in results.items():
         first, second = factor_values(result.model)
@@ -297,6 +302,9 @@ def main() -> None:
         ),
         "target_product": TARGET_PRODUCT,
         "sharpness_scale": scale,
+        "training": {
+            name: result.config for name, result in results.items()
+        },
         "theoretical_smoothed_optimum": {
             "first_factor": theoretical_factor,
             "second_factor": theoretical_factor,

@@ -80,16 +80,17 @@ def _make_loader(
     data: Dataset | DataLoader | tuple[torch.Tensor, torch.Tensor],
     config: Mapping[str, Any],
 ) -> DataLoader:
-    if isinstance(data, DataLoader) and config["algorithm"] != "gd":
-        return data
     dataset = _as_dataset(data)
     full_batch = config["algorithm"] == "gd"
     batch_size = len(dataset) if full_batch else min(int(config["batch_size"]), len(dataset))
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(config.get("batch_seed", config.get("seed", 0))))
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=not full_batch,
         num_workers=int(config.get("num_workers", 0)),
+        generator=generator,
     )
 
 
@@ -199,6 +200,7 @@ def train(
         "regularized_loss": [],
         "learning_rate": [],
         "sharpness_scale": [],
+        "batch_size": [],
         "layer_balance": [],
     }
     result = TrainingResult(model=model, history=history, config=resolved)
@@ -246,6 +248,7 @@ def train(
                 ),
                 "learning_rate": outcome.learning_rate,
                 "sharpness_scale": scale,
+                "batch_size": int(inputs.shape[0]),
                 "layer_balance": _layer_balancedness(model),
             }
             for name, value in outcome.clean_components.items():

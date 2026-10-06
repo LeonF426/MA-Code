@@ -22,13 +22,13 @@ from ssam import (
     plot_sharpness_interpolation,
     plot_training_history,
     train,
+    write_training_history,
 )
 from model_config import (
     BASE_CONFIG,
     BASE_CONFIG_DENSE,
     BASE_CONFIG_LINEAR,
     BASE_CONFIG_RELU,
-    SEED,
     config_for,
 )
 
@@ -180,7 +180,6 @@ def _train_pair(
     AverageSharpnessInterpolationResult,
     AverageSharpnessResult,
 ]:
-    torch.manual_seed(SEED)
     reference = build_model(configs["sgd"])
     initial_state = copy.deepcopy(reference.state_dict())
     models = {}
@@ -222,9 +221,16 @@ def _train_pair(
             **{f"train_{key}": value for key, value in train_scores.items()},
             **{f"test_{key}": value for key, value in test_scores.items()},
         }
+        history_plot = config["visualization"]["training_history"]
         plot_training_history(
             result,
             output_dir / f"{label}_{algorithm}_history.png",
+            smoothing_window=int(history_plot["smoothing_window"]),
+            loss_start_step=int(history_plot["loss_start_step"]),
+        )
+        write_training_history(
+            result,
+            output_dir / f"{label}_{algorithm}_history.json",
         )
         print(
             f"{algorithm:>5} | test RMSE={test_scores['rmse']:.4f} "
@@ -275,7 +281,8 @@ def main() -> None:
     }
     run = create_run_artifacts(
         effective_config,
-        BASE_CONFIG["visualization"]["output_dir"],
+        Path(__file__).resolve().parents[1]
+        / BASE_CONFIG["visualization"]["output_dir"],
         "california_housing",
     )
     output_dir = run.output_dir
@@ -289,7 +296,7 @@ def main() -> None:
     )
 
     summaries = {}
-    _, linear_scores, _, linear_initial = _train_pair(
+    linear_results, linear_scores, _, linear_initial = _train_pair(
         "california_linear",
         experiment_configs["california_linear"],
         training_data,
@@ -299,13 +306,16 @@ def main() -> None:
     )
     summaries["california_linear"] = {
         "initial_average_sharpness": asdict(linear_initial),
+        "training": {
+            name: result.config for name, result in linear_results.items()
+        },
         "algorithms": linear_scores,
     }
 
     for depth in (3,):
         label = f"california_{depth}L_diag"
         configs = experiment_configs[label]
-        _, scores, _, initial_sharpness = _train_pair(
+        results, scores, _, initial_sharpness = _train_pair(
             label,
             configs,
             training_data,
@@ -315,10 +325,13 @@ def main() -> None:
         )
         summaries[label] = {
             "initial_average_sharpness": asdict(initial_sharpness),
+            "training": {
+                name: result.config for name, result in results.items()
+            },
             "algorithms": scores,
         }
 
-    _, dense_scores, _, dense_initial = _train_pair(
+    dense_results, dense_scores, _, dense_initial = _train_pair(
         "california_dense",
         experiment_configs["california_dense"],
         training_data,
@@ -328,6 +341,9 @@ def main() -> None:
     )
     summaries["california_dense"] = {
         "initial_average_sharpness": asdict(dense_initial),
+        "training": {
+            name: result.config for name, result in dense_results.items()
+        },
         "algorithms": dense_scores,
     }
 

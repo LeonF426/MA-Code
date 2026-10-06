@@ -16,6 +16,7 @@ def sample_parameter_noise(
     scale: float,
     *,
     normalized: bool = False,
+    generator: torch.Generator | None = None,
 ) -> list[torch.Tensor]:
     """Draw one Gaussian parameter perturbation.
 
@@ -25,7 +26,15 @@ def sample_parameter_noise(
 
     if scale < 0.0:
         raise ValueError("sharpness_scale must be non-negative")
-    noise = [torch.randn_like(parameter) for parameter in parameters]
+    noise = [
+        torch.randn(
+            parameter.shape,
+            dtype=parameter.dtype,
+            device=parameter.device,
+            generator=generator,
+        )
+        for parameter in parameters
+    ]
     if normalized:
         squared_norm = sum(value.square().sum() for value in noise)
         norm = torch.sqrt(squared_norm).clamp_min(1e-12)

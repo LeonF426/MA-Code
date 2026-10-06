@@ -15,6 +15,7 @@ from .pinn_objective import (
     configure_selective_pinn_loss,
     resolve_sharpness_components,
 )
+from .pinn_batching import PINNBatcher
 from .schedules import build_learning_rate_policy, build_schedule
 from .trainers import TrainingResult, _device, _inferred_policy_shape
 from .update_rules import build_update_rule
@@ -54,8 +55,8 @@ class LinearPinnMetrics:
 
 FeatureMap = Callable[[torch.Tensor], torch.Tensor]
 ResidualFunction = Callable[[nn.Module, torch.Tensor], torch.Tensor]
-LossClosureFactory = Callable[
-    [torch.device, torch.dtype], Callable[[], dict[str, torch.Tensor]]
+PinnLossFunction = Callable[
+    [Mapping[str, torch.Tensor]], dict[str, torch.Tensor]
 ]
 
 
@@ -422,8 +423,9 @@ def _pinn_weights(config: Mapping[str, Any]) -> tuple[float, float]:
 
 def _train_fixed_pinn(
     model: nn.Module,
+    point_groups: Mapping[str, torch.Tensor],
     config: Mapping[str, Any],
-    closure_factory: LossClosureFactory,
+    loss_function: PinnLossFunction,
     callbacks: list[Callable[[int, nn.Module, dict[str, Any]], None]] | None,
 ) -> TrainingResult:
     resolved = training_config(config)
@@ -439,17 +441,13 @@ def _train_fixed_pinn(
         dtype = next(model.parameters()).dtype
     except StopIteration as exc:
         raise ValueError("The model has no trainable parameters") from exc
-    base_closure = closure_factory(device, dtype)
+    device_points = {
+        name: points.to(device=device, dtype=dtype)
+        for name, points in point_groups.items()
+    }
+    batcher = PINNBatcher(device_points, resolved)
     pde_weight, boundary_weight = _pinn_weights(config)
     sharpness_components = resolve_sharpness_components(config)
-
-    def closure() -> dict[str, torch.Tensor]:
-        return configure_selective_pinn_loss(
-            base_closure(),
-            pde_weight=pde_weight,
-            boundary_weight=boundary_weight,
-            sharpness_components=sharpness_components,
-        )
 
     dimension, depth = _inferred_policy_shape(model, config)
     learning_rate_policy = build_learning_rate_policy(
@@ -475,6 +473,9 @@ def _train_fixed_pinn(
         "learning_rate": [],
         "sharpness_scale": [],
     }
+    for name in device_points:
+        history[f"{name}_batch_size"] = []
+    resolved["effective_batch_sizes"] = dict(batcher.batch_sizes)
     result = TrainingResult(model=model, history=history, config=resolved)
     if resolved["algorithm"] == "s_sam":
         print(
@@ -482,6 +483,16 @@ def _train_fixed_pinn(
             + ", ".join(sorted(sharpness_components))
         )
     for step in range(steps):
+        batches = batcher.next()
+
+        def closure() -> dict[str, torch.Tensor]:
+            return configure_selective_pinn_loss(
+                loss_function(batches),
+                pde_weight=pde_weight,
+                boundary_weight=boundary_weight,
+                sharpness_components=sharpness_components,
+            )
+
         scale = float(sharpness_schedule(step))
         outcome = update_rule.step(
             closure,
@@ -509,6 +520,8 @@ def _train_fixed_pinn(
             "learning_rate": outcome.learning_rate,
             "sharpness_scale": scale,
         }
+        for name, batch in batches.items():
+            record[f"{name}_batch_size"] = int(batch.shape[0])
         for name, value in record.items():
             history[name].append(value)
         for callback in callbacks:
@@ -526,24 +539,23 @@ def train_advection_pinn(
 
     pde_weight, boundary_weight = _pinn_weights(config)
 
-    def factory(device: torch.device, dtype: torch.dtype):
-        interior = points.interior.to(device=device, dtype=dtype)
-        initial = points.initial.to(device=device, dtype=dtype)
-        boundary = points.boundary.to(device=device, dtype=dtype)
+    point_groups = {
+        "interior": points.interior,
+        "initial": points.initial,
+        "boundary": points.boundary,
+    }
 
-        def closure() -> dict[str, torch.Tensor]:
-            return advection_loss_components(
-                model,
-                interior,
-                initial,
-                boundary,
-                pde_weight=pde_weight,
-                boundary_weight=boundary_weight,
-            )
+    def loss_function(batches: Mapping[str, torch.Tensor]):
+        return advection_loss_components(
+            model,
+            batches["interior"],
+            batches["initial"],
+            batches["boundary"],
+            pde_weight=pde_weight,
+            boundary_weight=boundary_weight,
+        )
 
-        return closure
-
-    return _train_fixed_pinn(model, config, factory, callbacks)
+    return _train_fixed_pinn(model, point_groups, config, loss_function, callbacks)
 
 
 def train_polynomial_poisson_pinn(
@@ -556,22 +568,21 @@ def train_polynomial_poisson_pinn(
 
     pde_weight, boundary_weight = _pinn_weights(config)
 
-    def factory(device: torch.device, dtype: torch.dtype):
-        interior = points.interior.to(device=device, dtype=dtype)
-        boundary = points.boundary.to(device=device, dtype=dtype)
+    point_groups = {
+        "interior": points.interior,
+        "boundary": points.boundary,
+    }
 
-        def closure() -> dict[str, torch.Tensor]:
-            return polynomial_poisson_loss_components(
-                model,
-                interior,
-                boundary,
-                pde_weight=pde_weight,
-                boundary_weight=boundary_weight,
-            )
+    def loss_function(batches: Mapping[str, torch.Tensor]):
+        return polynomial_poisson_loss_components(
+            model,
+            batches["interior"],
+            batches["boundary"],
+            pde_weight=pde_weight,
+            boundary_weight=boundary_weight,
+        )
 
-        return closure
-
-    return _train_fixed_pinn(model, config, factory, callbacks)
+    return _train_fixed_pinn(model, point_groups, config, loss_function, callbacks)
 
 
 def train_heat_pinn(
@@ -584,24 +595,23 @@ def train_heat_pinn(
 
     pde_weight, boundary_weight = _pinn_weights(config)
 
-    def factory(device: torch.device, dtype: torch.dtype):
-        interior = points.interior.to(device=device, dtype=dtype)
-        initial = points.initial.to(device=device, dtype=dtype)
-        boundary = points.boundary.to(device=device, dtype=dtype)
+    point_groups = {
+        "interior": points.interior,
+        "initial": points.initial,
+        "boundary": points.boundary,
+    }
 
-        def closure() -> dict[str, torch.Tensor]:
-            return heat_loss_components(
-                model,
-                interior,
-                initial,
-                boundary,
-                pde_weight=pde_weight,
-                boundary_weight=boundary_weight,
-            )
+    def loss_function(batches: Mapping[str, torch.Tensor]):
+        return heat_loss_components(
+            model,
+            batches["interior"],
+            batches["initial"],
+            batches["boundary"],
+            pde_weight=pde_weight,
+            boundary_weight=boundary_weight,
+        )
 
-        return closure
-
-    return _train_fixed_pinn(model, config, factory, callbacks)
+    return _train_fixed_pinn(model, point_groups, config, loss_function, callbacks)
 
 
 def _evaluate_fixed_pinn(

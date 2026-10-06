@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from typing import Any
 
 import torch
@@ -167,16 +168,44 @@ def _initialize_tensor(tensor: torch.Tensor, name: str, options: Mapping[str, An
 def initialize_model(model: nn.Module, initialization: str | Mapping[str, Any]) -> None:
     options = {"name": initialization} if isinstance(initialization, str) else dict(initialization)
     init_type = options.pop("type", None)
+    alias = options.pop("name", None)
     if init_type is None:
-        init_type = options.pop("name", "default")
+        init_type = "default" if alias is None else alias
+    elif alias is not None and str(alias).lower() != str(init_type).lower():
+        raise ValueError("parameter_init.type and parameter_init.name disagree")
     name = str(init_type).lower()
+    seed = options.pop("seed", None)
+    options.pop("rescaling", None)
+    allowed_options = {
+        "default": {"bias"},
+        "pretrained": set(),
+        "zeros": {"bias"},
+        "ones": {"bias"},
+        "identity": {"bias"},
+        "normal": {"mean", "std", "bias"},
+        "uniform": {"low", "high", "bias"},
+        "xavier_uniform": {"gain", "bias"},
+        "xavier_normal": {"gain", "bias"},
+        "kaiming_uniform": {"nonlinearity", "bias"},
+        "kaiming_normal": {"nonlinearity", "bias"},
+        "orthogonal": {"gain", "bias"},
+    }
+    if name not in allowed_options:
+        raise ValueError(f"Unknown parameter initialization {name!r}")
+    unknown = set(options) - allowed_options[name]
+    if unknown:
+        raise ValueError(f"Unknown parameter_init keys for {name!r}: {sorted(unknown)}")
     if name == "pretrained":
         return
-    for module in model.modules():
-        if isinstance(module, (nn.Linear, DiagLinear)):
-            _initialize_tensor(module.weight, name, options)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, float(options.get("bias", 0.0)))
+    rng_context = torch.random.fork_rng(devices=[]) if seed is not None else nullcontext()
+    with rng_context:
+        if seed is not None:
+            torch.random.default_generator.manual_seed(int(seed))
+        for module in model.modules():
+            if isinstance(module, (nn.Linear, DiagLinear)):
+                _initialize_tensor(module.weight, name, options)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, float(options.get("bias", 0.0)))
 
 
 def _build_torchvision_model(config: Mapping[str, Any]) -> nn.Module:
@@ -215,8 +244,9 @@ def _build_torchvision_model(config: Mapping[str, Any]) -> nn.Module:
             model.heads.head = nn.Linear(model.heads.head.in_features, num_classes)
         else:
             raise ValueError(f"Cannot replace classifier for {model_name!r}")
-    if not pretrained:
-        initialize_model(model, init_config)
+    # Also call this for pretrained models: the initializer returns without
+    # changing weights, but still validates misspelled/unsupported options.
+    initialize_model(model, init_config)
     return model
 
 
@@ -224,18 +254,33 @@ def build_model(config: Mapping[str, Any]) -> nn.Module:
     """Build a configured custom or torchvision benchmark model."""
 
     resolved = model_config(config)
-    if resolved["type"].startswith("torchvision/"):
-        return _build_torchvision_model(resolved)
-
-    model = ConfigurableNet(
-        _expanded_layer_specs(resolved),
-        default_activation=str(resolved.get("activation", "identity")),
-        output_activation=str(resolved.get("output_activation", "identity")),
-        default_bias=bool(resolved.get("bias", True)),
-        output_reduction=str(resolved.get("output_reduction", "none")),
-    )
     initialization = resolved.get("parameter_init", {"type": "default"})
-    initialize_model(model, initialization)
+    initialization_options = (
+        {} if isinstance(initialization, str) else dict(initialization)
+    )
+    seed = initialization_options.get("seed")
+    rng_context = torch.random.fork_rng(devices=[]) if seed is not None else nullcontext()
+    with rng_context:
+        if seed is not None:
+            torch.random.default_generator.manual_seed(int(seed))
+        if resolved["type"].startswith("torchvision/"):
+            if (
+                isinstance(initialization, Mapping)
+                and initialization.get("rescaling")
+            ):
+                raise ValueError(
+                    "parameter_init.rescaling is not supported for torchvision models"
+                )
+            return _build_torchvision_model(resolved)
+
+        model = ConfigurableNet(
+            _expanded_layer_specs(resolved),
+            default_activation=str(resolved.get("activation", "identity")),
+            output_activation=str(resolved.get("output_activation", "identity")),
+            default_bias=bool(resolved.get("bias", True)),
+            output_reduction=str(resolved.get("output_reduction", "none")),
+        )
+        initialize_model(model, initialization)
     if isinstance(initialization, Mapping):
         rescaling = initialization.get("rescaling")
         if rescaling:

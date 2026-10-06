@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from ssam import create_run_artifacts
+from ssam import create_run_artifacts, write_training_history
 
 
 def test_run_artifacts_save_config_and_index(tmp_path):
@@ -15,13 +15,17 @@ def test_run_artifacts_save_config_and_index(tmp_path):
 
     assert run.run_id.startswith("PDE-only_")
     assert json.loads((run.output_dir / "config.json").read_text()) == config
-    assert not (run.output_dir / "manifest.json").exists()
+    manifest = json.loads((run.output_dir / "manifest.json").read_text())
+    assert manifest["config_sha256"] == run.config_sha256
+    assert manifest["source_sha256"] == run.source_sha256
+    assert manifest["provenance"]["source_tree_sha256"] == run.source_sha256
     records = [json.loads(line) for line in (tmp_path / "runs.jsonl").read_text().splitlines()]
     assert records == [
         {
             "completed_at": records[0]["completed_at"],
             "config_file": f"{run.run_id}/config.json",
             "config_sha256": run.config_sha256,
+            "source_sha256": run.source_sha256,
             "example": "poisson_pinn",
             "metrics_file": f"{run.run_id}/metrics.json",
             "metrics": {"loss": 1.0},
@@ -41,3 +45,13 @@ def test_run_artifacts_never_overwrite_same_second(tmp_path):
     assert first.output_dir != second.output_dir
     assert (first.output_dir / "config.json").is_file()
     assert (second.output_dir / "config.json").is_file()
+
+
+def test_training_history_is_strict_json_and_keeps_effective_config(tmp_path):
+    destination = write_training_history(
+        {"sgd": {"step": [0, 1], "loss": [2.0, float("nan")]}},
+        tmp_path / "training_history.json",
+    )
+
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    assert payload["algorithms"]["sgd"]["history"]["loss"] == [2.0, None]

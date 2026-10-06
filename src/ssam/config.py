@@ -34,6 +34,34 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
+_TRAINING_KEYS = {
+    "algorithm",
+    "epochs",
+    "steps",
+    "batch_size",
+    "batch_seed",
+    "learning_rate",
+    "sharpness_scale",
+    "optimizer",
+    "loss",
+    "loss_requires_grad",
+    "seed",
+    "device",
+    "checkpoint_every",
+    "perturbation",
+    "num_workers",
+    "max_grad_norm",
+}
+_PERTURBATION_KEYS = {
+    "distribution",
+    "samples",
+    "normalized",
+    "antithetic",
+    "preserve_buffers",
+    "max_grad_norm",
+    "seed",
+}
+
 
 def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     merged = deepcopy(base)
@@ -69,6 +97,28 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
     model = normalized["model"]
     training = normalized["training"]
 
+    training_override = config.get("training", {})
+    if isinstance(training_override, Mapping):
+        unknown_training = set(training_override) - _TRAINING_KEYS
+        if unknown_training:
+            raise ValueError(
+                f"Unknown training config keys: {sorted(unknown_training)}"
+            )
+        # Named policies are alternatives, not partial overlays on a policy of
+        # another type. Replacing them avoids inherited keys that look valid in
+        # the saved config but are irrelevant to the selected implementation.
+        for key in ("learning_rate", "sharpness_scale", "optimizer", "perturbation"):
+            if key in training_override:
+                training[key] = deepcopy(training_override[key])
+        perturbation_override = training_override.get("perturbation")
+        if isinstance(perturbation_override, Mapping):
+            unknown_perturbation = set(perturbation_override) - _PERTURBATION_KEYS
+            if unknown_perturbation:
+                raise ValueError(
+                    "Unknown training.perturbation keys: "
+                    f"{sorted(unknown_perturbation)}"
+                )
+
     model_override = config.get("model", {})
     model_type = str(model.get("type", "")).lower()
     if isinstance(model_override, Mapping) and "type" not in model_override:
@@ -83,12 +133,15 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
             )
     if isinstance(model_override, Mapping):
         init_override = model_override.get("parameter_init")
+        if init_override is not None:
+            model["parameter_init"] = deepcopy(init_override)
         if (
             isinstance(init_override, Mapping)
             and "type" not in init_override
             and "name" in init_override
         ):
             model["parameter_init"]["type"] = init_override["name"]
+            model["parameter_init"].pop("name", None)
     if not model_type:
         legacy_name = str(model.get("name", "")).lower()
         if legacy_name in {"mlp", "mixed_linear"} or legacy_name.startswith(
@@ -126,6 +179,7 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
         perturbation.setdefault("normalized", False)
         perturbation.setdefault("antithetic", False)
         perturbation.setdefault("preserve_buffers", True)
+        perturbation.setdefault("seed", int(training.get("seed", 0)))
         if int(perturbation["samples"]) < 1:
             raise ValueError("training.perturbation.samples must be positive")
         if bool(perturbation["antithetic"]) and int(perturbation["samples"]) % 2:

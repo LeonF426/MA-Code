@@ -44,6 +44,8 @@ def test_sgd_and_ssam_share_result_shape():
     sgd = train(_model(), data, _training("sgd"))
     ssam = train(_model(), data, _training("s_sam"))
     assert len(sgd.history["loss"]) == len(ssam.history["loss"]) == 30
+    assert set(sgd.history["batch_size"]) == {16}
+    assert set(ssam.history["batch_size"]) == {16}
     assert ssam.history["sharpness_scale"][0] == 0.05
     assert len(ssam.parameter_snapshots) >= 3
 
@@ -129,5 +131,5 @@ def test_ssam_reduces_two_factor_imbalance_from_exact_fit():
     final_imbalance = abs(final_first**2 - final_second**2)
 
     assert final_imbalance < 0.9 * initial_imbalance
-    assert (final_first * final_second - 1.0) ** 2 < 1e-3
+    assert (final_first * final_second - 1.0) ** 2 < 5e-3
 

@@ -3,6 +3,7 @@
 import copy
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -16,6 +17,7 @@ from ssam import (
     train,
     evaluate_average_sharpness,
     evaluate_average_sharpness_interpolation,
+    write_training_history,
 )
 
 seed = 125
@@ -36,7 +38,7 @@ CONFIG_1 = {
         "output_activation": "identity",
         "output_reduction": "sum",
         "bias": False,
-        "parameter_init": {"type": "ones"},
+        "parameter_init": {"type": "ones", "seed": seed},
     },
     "data": {
         "name": "linear_regression",
@@ -59,18 +61,22 @@ CONFIG_1 = {
         #     "loss_floor": 1e-12,
         # },
         "learning_rate": {"name": "tamed",
-                          "type": "sgd",
                           "inserted_lr":{
                           "name": "constant", "value": 0.1
         }
                           },
         "sharpness_scale": {"name": "constant", "value": 1},
         #"sharpness_scale": {"name": "inverse_time","initial": 2,"power": 0.25,"floor": 0.0,},
-        "perturbation": {"distribution": "gaussian", "samples": 50},
+        "perturbation": {
+            "distribution": "gaussian",
+            "samples": 50,
+            "seed": seed,
+        },
         "optimizer": {"name": "sgd", "momentum": 0.0},
         "loss": "mse",
         "checkpoint_every": 1000,
         "seed": seed,
+        "batch_seed": seed,
         "device": "auto",
     },
     "visualization": {
@@ -82,6 +88,7 @@ CONFIG_1 = {
             "interpolation_points": 11,
             "interpolation_samples": 512,
         },
+        "training_history": {"smoothing_window": 1, "loss_start_step": 0},
     },
 }
 
@@ -98,7 +105,7 @@ def main() -> None:
     }
     run = create_run_artifacts(
         run_config,
-        CONFIG_1["visualization"]["output_dir"],
+        Path(__file__).resolve().parent / CONFIG_1["visualization"]["output_dir"],
         "mixed_linear",
     )
     output_dir = run.output_dir
@@ -106,7 +113,6 @@ def main() -> None:
     dataset = build_dataset(CONFIG_1["data"])
 
     # Build the first model at the shared initial parameter estimate.
-    torch.manual_seed(seed)
     model_1 = build_model(CONFIG_1)
 
     # deepcopy is essential because state_dict() tensors otherwise reference
@@ -225,7 +231,7 @@ def main() -> None:
     )
 
     print(f"Final S-SAM loss: {result_1.history['loss'][-1]:.6f}")
-    print(f"Final GD loss:    {result_2.history['loss'][-1]:.6f}")
+    print(f"Final SGD loss:  {result_2.history['loss'][-1]:.6f}")
 
     print()
     print(
@@ -246,21 +252,34 @@ def main() -> None:
         result_1.model,
     )
 
+    history_plot = CONFIG_1["visualization"]["training_history"]
     plot_training_history(
         result_1,
         output_dir
         / f"{CONFIG_1['model']['name']}_{CONFIG_1['training']['algorithm']}_{CONFIG_1['training']['learning_rate']['name']}.png",
+        smoothing_window=int(history_plot["smoothing_window"]),
+        loss_start_step=int(history_plot["loss_start_step"]),
     )
 
     plot_training_history(
         result_2,
         output_dir
         / f"{CONFIG_2['model']['name']}_{CONFIG_2['training']['algorithm']}_{CONFIG_2['training']['learning_rate']['name']}.png",
+        smoothing_window=int(history_plot["smoothing_window"]),
+        loss_start_step=int(history_plot["loss_start_step"]),
+    )
+    write_training_history(
+        {"s_sam": result_1, "sgd": result_2},
+        output_dir / "training_history.json",
     )
     (output_dir / "metrics.json").write_text(
         json.dumps(
             {
                 "initial_average_sharpness": asdict(initial_sharpness),
+                "training": {
+                    "s_sam": result_1.config,
+                    "sgd": result_2.config,
+                },
                 "algorithms": {
                     "s_sam": {
                         "final_loss": result_1.history["loss"][-1],

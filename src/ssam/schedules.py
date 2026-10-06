@@ -20,21 +20,35 @@ def register_schedule(name: str, factory: Callable[[Mapping[str, Any]], Schedule
 
 
 def _constant(config: Mapping[str, Any]) -> Schedule:
+    _validate_keys(config, {"name", "value", "initial"}, "constant")
     value = float(config.get("value", config.get("initial", 0.0)))
     return lambda step: value
 
 
 def _inverse_time(config: Mapping[str, Any]) -> Schedule:
+    _validate_keys(
+        config,
+        {"name", "initial", "value", "power", "offset", "alpha", "floor"},
+        "inverse_time",
+    )
     initial = float(config.get("initial", config.get("value", 1.0)))
     power = float(config.get("power", 1.0))
     offset = float(config.get("offset", 1.0))
+    alpha = float(config.get("alpha", 1.0))
     floor = float(config.get("floor", 0.0))
     if offset <= 0.0:
         raise ValueError("inverse_time.offset must be positive")
-    return lambda step: floor + initial / (offset + step) ** power
+    if alpha <= 0.0:
+        raise ValueError("inverse_time.alpha must be positive")
+    return lambda step: floor + initial / (offset + alpha * step) ** power
 
 
 def _linear(config: Mapping[str, Any]) -> Schedule:
+    _validate_keys(
+        config,
+        {"name", "start", "initial", "end", "duration"},
+        "linear",
+    )
     start = float(config.get("start", config.get("initial", 1.0)))
     end = float(config.get("end", 0.0))
     duration = max(1, int(config["duration"]))
@@ -42,6 +56,7 @@ def _linear(config: Mapping[str, Any]) -> Schedule:
 
 
 def _cosine(config: Mapping[str, Any]) -> Schedule:
+    _validate_keys(config, {"name", "initial", "final", "duration"}, "cosine")
     initial = float(config.get("initial", 1.0))
     final = float(config.get("final", 0.0))
     duration = max(1, int(config["duration"]))
@@ -54,6 +69,7 @@ def _cosine(config: Mapping[str, Any]) -> Schedule:
 
 
 def _piecewise(config: Mapping[str, Any]) -> Schedule:
+    _validate_keys(config, {"name", "values"}, "piecewise")
     points = sorted((int(step), float(value)) for step, value in config["values"])
     if not points:
         raise ValueError("A piecewise schedule requires at least one [step, value] pair")
@@ -67,6 +83,16 @@ def _piecewise(config: Mapping[str, Any]) -> Schedule:
         return value
 
     return schedule
+
+
+def _validate_keys(
+    config: Mapping[str, Any],
+    allowed: set[str],
+    context: str,
+) -> None:
+    unknown = set(config) - allowed
+    if unknown:
+        raise ValueError(f"Unknown {context} config keys: {sorted(unknown)}")
 
 
 register_schedule("constant", _constant)
@@ -99,7 +125,6 @@ class LearningRatePolicy:
     requires_regularized_loss: bool
     function: LearningRateFunction
     requires_gradient_norm: bool = False
-    update_type: str = "gd"
 
     def __call__(
         self,
@@ -198,9 +223,7 @@ def _build_tamed_policy(
     if "inserted_lr" not in config:
         raise ValueError("tamed requires an 'inserted_lr' configuration")
 
-    update_type = str(config.get("type", "gd")).lower()
-    if update_type not in {"gd", "sgd"}:
-        raise ValueError("tamed.type must be either 'gd' or 'sgd'")
+    _validate_keys(config, {"name", "inserted_lr"}, "tamed learning-rate")
 
     inserted = build_learning_rate_policy(
         config["inserted_lr"],
@@ -234,7 +257,6 @@ def _build_tamed_policy(
         requires_regularized_loss=inserted.requires_regularized_loss,
         function=function,
         requires_gradient_norm=True,
-        update_type=update_type
     )
 
 
@@ -267,6 +289,19 @@ def build_learning_rate_policy(
     if name == "strong_descent_diag":
         if not isinstance(config, Mapping):
             raise TypeError("strong_descent_diag requires a configuration dictionary")
+        _validate_keys(
+            config,
+            {
+                "name",
+                "dimension",
+                "depth",
+                "delta",
+                "safety",
+                "max_lr",
+                "loss_floor",
+            },
+            "strong_descent_diag learning-rate",
+        )
         dimension_value = config.get("dimension", default_dimension)
         depth_value = config.get("depth", default_depth)
         if dimension_value is None or depth_value is None:

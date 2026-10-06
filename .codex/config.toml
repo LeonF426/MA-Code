@@ -1,0 +1,8 @@
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[sandbox_workspace_write]
+writable_roots = []
+network_access = false
+exclude_slash_tmp = true
+exclude_tmpdir_env_var = true

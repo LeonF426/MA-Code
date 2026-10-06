@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from dataclasses import asdict
+from pathlib import Path
 import torch
 
 from ssam import (
@@ -13,14 +15,20 @@ from ssam import (
     create_run_artifacts,
     evaluate_average_sharpness_closure,
     evaluate_average_sharpness_interpolation_closure,
+    evaluate_poisson_forcing_sensitivity,
+    evaluate_poisson_laplace_sensitivity,
     evaluate_poisson_pinn,
     plot_pinn_training_history,
+    plot_poisson_forcing_sensitivity,
     plot_poisson_solutions,
     plot_sharpness_interpolation,
     poisson_loss_components,
     train_poisson_pinn,
+    write_training_history,
 )
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG = {
     # Optional human-readable prefix for the timestamped run directory.
@@ -43,9 +51,9 @@ CONFIG = {
                 "preserve_function": False,
                 "mode": "layerwise",
                 "log_scale_std": 0.04,
-                "seed": 272442342,
+                "seed": 72423425,
             },
-            "seed": 123939
+            "seed": 139396
         },
     },
     "data": {
@@ -53,7 +61,7 @@ CONFIG = {
         "interior_points": 512,
         "boundary_points": 256,
         "evaluation_resolution": 51,
-        "seed": 1753,
+        "seed": 17532,
     },
     "pinn": {
         "pde_weight": 1.0,
@@ -64,34 +72,56 @@ CONFIG = {
         "evaluation": {
             "sharpness_scale": 1e-1,
             "sharpness_samples": 100,
-            "sharpness_seed": 1023,
+            "sharpness_seed": 102387092,
             "antithetic": True,
             "interpolation_points": 11,
             "interpolation_samples": 32,
+            # Evaluate the final, frozen parameters against alternative PDEs
+            # -Delta u = forcing_scale * f. No retraining is performed.
+            "forcing_scales": [0.5, 0.75, 1.0, 1.25, 1.5],
+            "nominal_forcing_scale": 1.0,
+            # Local epistemic-uncertainty approximation around each final
+            # parameter vector. These bands do not randomize the RHS.
+            "laplace": {
+                "enabled": True,
+                "prior_precision": 100.0,
+                "likelihood_precision": 1.0,
+                "curvature_probes": 16,
+                "confidence_level": 0.95,
+                "seed": 27181,
+            },
         },
     },
     "training": {
         "steps": 1200,
-        "batch_size": 128,
+        "batch_size": 256,
         "learning_rate": {"name": "tamed",
-                          "type": "sgd",
-                          "inserted_lr":{"name": "constant", "value": 2e-3}},
+                          "inserted_lr":{"name": "constant", "value": 2e-2}},
         "sharpness_scale": {
             "name": "inverse_time",
             "initial": 1,
             "power": 0.5,
             "floor": 0.0,
         },
+        # "sharpness_scale": {
+        #     "name": "constant",
+        #     "value": 0.05
+        # },
         "perturbation": {
             "distribution": "gaussian",
             "samples": 20,
             "normalized": False,
             "antithetic": True,
             "preserve_buffers": True,
+            "seed": 224137,
         },
         "optimizer": {"name": "sgd", "momentum": 0.0},
-        "seed": 232413,
+        "seed": 2243,
+        "batch_seed": 2213,
         "device": "auto",
+    },
+    "visualization": {
+        "training_history": {"smoothing_window": 1, "loss_start_step": 0},
     },
 }
 
@@ -106,7 +136,7 @@ def main() -> None:
         configs[algorithm]["training"]["algorithm"] = algorithm
     run = create_run_artifacts(
         {"run": copy.deepcopy(CONFIG["run"]), "algorithms": configs},
-        pinn_config["output_dir"],
+        PROJECT_ROOT / pinn_config["output_dir"],
         "poisson_pinn",
     )
     output_dir = run.output_dir
@@ -114,7 +144,6 @@ def main() -> None:
     # One point object is shared by training, metrics, and both algorithms.
     reference_config = configs[algorithms[0]]
     points = build_poisson_points(reference_config)
-    torch.manual_seed(int(CONFIG["training"]["seed"]))
     reference = build_model(reference_config)
     initial_state = copy.deepcopy(reference.state_dict())
 
@@ -202,6 +231,9 @@ def main() -> None:
 
     results = {}
     metrics = {}
+    forcing_sensitivities = {}
+    laplace_sensitivities = {}
+    laplace_config = evaluation_config.get("laplace", {})
     for algorithm, config in configs.items():
         model = models[algorithm]
         results[algorithm] = train_poisson_pinn(model, points, config)
@@ -216,6 +248,46 @@ def main() -> None:
             antithetic=bool(evaluation_config.get("antithetic", True)),
             normalized=config["training"]["perturbation"]["normalized"],
         )
+        forcing_sensitivities[algorithm] = evaluate_poisson_forcing_sensitivity(
+            model,
+            points,
+            evaluation_config["forcing_scales"],
+            nominal_forcing_scale=float(
+                evaluation_config.get("nominal_forcing_scale", 1.0)
+            ),
+        )
+        if bool(laplace_config.get("enabled", True)):
+            laplace_sensitivities[algorithm] = evaluate_poisson_laplace_sensitivity(
+                model,
+                points,
+                evaluation_config["forcing_scales"],
+                pde_weight=float(config["pinn"]["pde_weight"]),
+                boundary_weight=float(config["pinn"]["boundary_weight"]),
+                prior_precision=float(laplace_config.get("prior_precision", 100.0)),
+                likelihood_precision=float(
+                    laplace_config.get("likelihood_precision", 1.0)
+                ),
+                curvature_probes=int(laplace_config.get("curvature_probes", 16)),
+                confidence_level=float(
+                    laplace_config.get("confidence_level", 0.95)
+                ),
+                seed=int(laplace_config.get("seed", 2718)),
+                nominal_forcing_scale=float(
+                    evaluation_config.get("nominal_forcing_scale", 1.0)
+                ),
+            )
+
+    original_rhs = {
+        "forcing_scale": 1.0,
+        "equation": "-Delta u = f(x,y)",
+        "expression": "f(x,y) = 2*pi^2*sin(pi*x)*sin(pi*y)",
+        "rhs_sine_coefficient": 2.0 * math.pi**2,
+    }
+    print(
+        "ORIGINAL RHS | -Delta u = f(x,y) = "
+        f"{original_rhs['rhs_sine_coefficient']:.6g} "
+        "sin(pi*x) sin(pi*y)"
+    )
 
     for algorithm, values in metrics.items():
         sharpness = values.average_sharpness
@@ -228,6 +300,61 @@ def main() -> None:
             f"{sharpness.average_sharpness:.4e} "
             f"+/- {1.96 * sharpness.standard_error:.2e}"
         )
+        sensitivity = forcing_sensitivities[algorithm]
+        for evaluation in sensitivity.evaluations:
+            rhs_kind = (
+                "ORIGINAL"
+                if math.isclose(evaluation.forcing_scale, 1.0)
+                else "PERTURBED"
+            )
+            print(
+                f"{algorithm:>5} | {rhs_kind} RHS "
+                f"scale={evaluation.forcing_scale:g}: "
+                f"-Delta u = {evaluation.rhs_sine_coefficient:.6g} "
+                "sin(pi*x) sin(pi*y) | "
+                f"RHS RMSE={evaluation.rhs_rmse:.4e} | "
+                f"RHS change RMSE={evaluation.rhs_change_rmse_from_nominal:.4e} | "
+                "nominal-normalized L2="
+                f"{evaluation.nominal_normalized_l2_error:.4e} | "
+                f"PDE RMSE={evaluation.pde_residual_rmse:.4e}"
+            )
+        print(
+            f"{algorithm:>5} | RHS sensitivity | "
+            "worst nominal-normalized L2="
+            f"{sensitivity.worst_nominal_normalized_l2_error:.4e} | "
+            f"worst PDE RMSE={sensitivity.worst_pde_residual_rmse:.4e} | "
+            "max changes/unit scale: "
+            "nominal-normalized L2="
+            f"{sensitivity.max_nominal_normalized_l2_error_change_per_unit_scale:.4e}, "
+            "PDE RMSE="
+            f"{sensitivity.max_pde_residual_rmse_change_per_unit_scale:.4e}"
+        )
+        laplace = laplace_sensitivities.get(algorithm)
+        if laplace is not None:
+            print(
+                f"{algorithm:>5} | Laplace ({laplace.approximation}) | "
+                f"clean gradient norm={laplace.clean_gradient_norm:.4e} | "
+                f"effective parameters={laplace.effective_parameter_count:.2f}/"
+                f"{laplace.parameter_count} | posterior parameter std: "
+                f"mean={laplace.posterior_parameter_std_mean:.4e}, "
+                f"max={laplace.posterior_parameter_std_max:.4e}"
+            )
+            for evaluation in laplace.evaluations:
+                solution_error = evaluation.nominal_normalized_l2_error
+                residual = evaluation.pde_residual_rmse
+                confidence_percent = 100.0 * laplace.confidence_level
+                print(
+                    f"{algorithm:>5} | Laplace RHS scale="
+                    f"{evaluation.forcing_scale:g} | "
+                    "nominal-normalized L2="
+                    f"{solution_error.central:.4e} "
+                    f"[{solution_error.confidence_low:.4e}, "
+                    f"{solution_error.confidence_high:.4e}] | "
+                    f"PDE RMSE={residual.central:.4e} "
+                    f"[{residual.confidence_low:.4e}, "
+                    f"{residual.confidence_high:.4e}] "
+                    f"({confidence_percent:g}% local interval)"
+                )
 
     if "sgd" in results and "s_sam" in results:
         evaluate_interpolation(
@@ -240,13 +367,52 @@ def main() -> None:
         points,
         output_dir / "solutions.png",
     )
-    plot_pinn_training_history(results, output_dir / "training_history.png")
+    plot_poisson_forcing_sensitivity(
+        forcing_sensitivities,
+        points,
+        output_dir / "forcing_sensitivity.png",
+        laplace_sensitivities=laplace_sensitivities,
+    )
+    history_plot = CONFIG["visualization"]["training_history"]
+    plot_pinn_training_history(
+        results,
+        output_dir / "training_history.png",
+        smoothing_window=int(history_plot["smoothing_window"]),
+        loss_start_step=int(history_plot["loss_start_step"]),
+    )
+    write_training_history(results, output_dir / "training_history.json")
     (output_dir / "metrics.json").write_text(
         json.dumps(
             {
+                "original_rhs": original_rhs,
+                "uncertainty_interpretation": {
+                    "forcing_sensitivity": (
+                        "Deterministic frozen-model stress test under a hand-selected "
+                        "multiplicative RHS family; not a probability model."
+                    ),
+                    "laplace_sensitivity": (
+                        "Local diagonal-GGN Gaussian parameter approximation with "
+                        "linearized metric propagation; intervals depend on the "
+                        "configured prior and likelihood precisions."
+                    ),
+                },
                 "initial_average_sharpness": asdict(initial_sharpness),
+                "training": {
+                    name: result.config for name, result in results.items()
+                },
                 "algorithms": {
-                    name: asdict(value) for name, value in metrics.items()
+                    name: {
+                        **asdict(value),
+                        "forcing_sensitivity": asdict(
+                            forcing_sensitivities[name]
+                        ),
+                        "laplace_sensitivity": (
+                            asdict(laplace_sensitivities[name])
+                            if name in laplace_sensitivities
+                            else None
+                        ),
+                    }
+                    for name, value in metrics.items()
                 },
             },
             indent=2,

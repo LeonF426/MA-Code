@@ -1,7 +1,7 @@
 """A compact toolkit for configurable GD, SGD, and stochastic S-SAM experiments."""
 
 from .config import DEFAULT_CONFIG, normalize_config
-from .artifacts import RunArtifacts, create_run_artifacts
+from .artifacts import RunArtifacts, create_run_artifacts, write_training_history
 from .data import (
     CALIFORNIA_HOUSING_FEATURES,
     build_dataset,
@@ -39,9 +39,16 @@ from .average_sharpness import (
     evaluate_average_sharpness_interpolation_closure,
 )
 from .pinn import (
+    LaplaceMetric,
+    PoissonForcingEvaluation,
+    PoissonForcingSensitivity,
+    PoissonLaplaceForcingEvaluation,
+    PoissonLaplaceSensitivity,
     PoissonMetrics,
     PoissonPointSets,
     build_poisson_points,
+    evaluate_poisson_forcing_sensitivity,
+    evaluate_poisson_laplace_sensitivity,
     evaluate_poisson_pinn,
     exact_poisson_solution,
     poisson_forcing,
@@ -77,6 +84,7 @@ from .linear_pinn import (
 )
 from .visualization import (
     plot_1d_pinn_solutions,
+    plot_poisson_forcing_sensitivity,
     plot_pinn_training_history,
     plot_poisson_solutions,
     plot_space_time_pinn_solutions,
@@ -92,9 +100,14 @@ __all__ = [
     "DiagLinear",
     "MixedLinearNet",
     "LearningRatePolicy",
+    "LaplaceMetric",
     "LinearRescalingResult",
     "LinearPinnMetrics",
     "PoissonMetrics",
+    "PoissonForcingEvaluation",
+    "PoissonForcingSensitivity",
+    "PoissonLaplaceForcingEvaluation",
+    "PoissonLaplaceSensitivity",
     "PoissonPointSets",
     "RunArtifacts",
     "PolynomialPoissonPointSets",
@@ -110,6 +123,7 @@ __all__ = [
     "build_learning_rate_policy",
     "build_schedule",
     "create_run_artifacts",
+    "write_training_history",
     "apply_function_preserving_linear_rescaling",
     "apply_linear_interface_rescaling",
     "estimate_regularized_objective",
@@ -120,6 +134,8 @@ __all__ = [
     "evaluate_advection_pinn",
     "evaluate_heat_pinn",
     "evaluate_polynomial_poisson_pinn",
+    "evaluate_poisson_forcing_sensitivity",
+    "evaluate_poisson_laplace_sensitivity",
     "evaluate_poisson_pinn",
     "exact_advection_solution",
     "exact_heat_solution",
@@ -132,6 +148,7 @@ __all__ = [
     "plot_sharpness_interpolation",
     "plot_1d_pinn_solutions",
     "plot_pinn_training_history",
+    "plot_poisson_forcing_sensitivity",
     "plot_poisson_solutions",
     "plot_space_time_pinn_solutions",
     "advection_features",

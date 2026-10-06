@@ -40,7 +40,6 @@ TRAINING_CONFIG = {
     "batch_size": 64,
     "learning_rate": {
         "name": "tamed",
-        "type": "sgd",
         "inserted_lr": {"name": "constant", "value": 0.5},
     },
     # A radius of 2 was larger than the useful parameter scale for these models.
@@ -51,11 +50,13 @@ TRAINING_CONFIG = {
         "samples": 24,
         "normalized": False,
         "antithetic": True,
+        "seed": SEED,
     },
     "optimizer": {"name": "sgd", "momentum": 0.0},
     "loss": "mse",
     "checkpoint_every": 0,
     "seed": SEED,
+    "batch_seed": SEED,
     "device": "auto",
 }
 
@@ -69,6 +70,7 @@ VISUALIZATION_CONFIG = {
         "normalized": False,
         "antithetic": True,
     },
+    "training_history": {"smoothing_window": 1, "loss_start_step": 0},
 }
 
 
@@ -94,7 +96,11 @@ BASE_CONFIG_LINEAR = _experiment(
         "output_reduction": "none",
         "bias": True,
         # A single affine layer has no hidden interface to rescale.
-        "parameter_init": {"type": "xavier_uniform", "bias": 0.0},
+        "parameter_init": {
+            "type": "xavier_uniform",
+            "bias": 0.0,
+            "seed": SEED,
+        },
     }
 )
 
@@ -114,6 +120,7 @@ BASE_CONFIG = _experiment(
         "parameter_init": {
             "type": "identity",
             "bias": 0.0,
+            "seed": SEED,
             "rescaling": {
                 "preserve_function": False,
                 "mode": "layerwise",
@@ -145,6 +152,7 @@ BASE_CONFIG_DENSE = _experiment(
         "parameter_init": {
             "type": "xavier_uniform",
             "bias": 0.0,
+            "seed": SEED,
             "rescaling": {
                 "preserve_function": False,
                 "mode": "layerwise",
@@ -174,6 +182,7 @@ BASE_CONFIG_RELU = _experiment(
             "type": "kaiming_uniform",
             "nonlinearity": "relu",
             "bias": 0.0,
+            "seed": SEED,
             "rescaling": {
                 "enabled": True,
                 "mode": "neuronwise",

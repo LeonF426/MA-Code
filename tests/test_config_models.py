@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 import torch
 
@@ -72,4 +74,44 @@ def test_free_form_name_is_separate_from_model_type_and_init_type():
 def test_free_form_name_without_type_has_clear_error():
     with pytest.raises(ValueError, match="free-form model.name requires model.type"):
         build_model({"name": "personal_run_17", "input_dim": 2, "depth": 1})
+
+
+def test_parameter_initialization_seed_is_local_and_effective():
+    config = {
+        "type": "mlp",
+        "input_dim": 2,
+        "output_dim": 1,
+        "depth": 2,
+        "width": 4,
+        "parameter_init": {"type": "xavier_uniform", "seed": 17},
+    }
+    torch.manual_seed(1)
+    first = build_model(config)
+    torch.manual_seed(999)
+    second = build_model(config)
+    changed = copy.deepcopy(config)
+    changed["parameter_init"]["seed"] = 18
+    third = build_model(changed)
+
+    for left, right in zip(first.parameters(), second.parameters()):
+        torch.testing.assert_close(left, right, rtol=0.0, atol=0.0)
+    assert any(
+        not torch.equal(left, right)
+        for left, right in zip(first.parameters(), third.parameters())
+    )
+
+
+def test_unknown_parameter_initialization_key_is_rejected():
+    with pytest.raises(ValueError, match="Unknown parameter_init keys"):
+        build_model(
+            {
+                "type": "mlp",
+                "input_dim": 1,
+                "depth": 1,
+                "parameter_init": {
+                    "type": "xavier_uniform",
+                    "sead": 7,
+                },
+            }
+        )
 

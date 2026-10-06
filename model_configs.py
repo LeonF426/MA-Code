@@ -1,4 +1,4 @@
-seed = None
+seed = 7
 
 BASE_CONFIG = {
     "model": {
@@ -13,6 +13,7 @@ BASE_CONFIG = {
         "parameter_init": {
             "type": "identity",
             "bias": 0.0,
+            "seed": seed,
         },
     },
     "data": {
@@ -30,7 +31,6 @@ BASE_CONFIG = {
         "batch_size": 256,
         "learning_rate": {
             "name": "tamed",
-            "type": "sgd",
             "inserted_lr": {
                 "name": "constant",
                 "value": 0.1,
@@ -45,6 +45,7 @@ BASE_CONFIG = {
             "samples": 8,
             "normalized": True,
             "antithetic": True,
+            "seed": seed,
         },
         "optimizer": {
             "name": "sgd",
@@ -52,6 +53,8 @@ BASE_CONFIG = {
         },
         "loss": "mse",
         "checkpoint_every": 0,
+        "seed": seed,
+        "batch_seed": seed,
         "device": "auto",
     },
 }

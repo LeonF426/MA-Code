@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import asdict
+from pathlib import Path
 import torch
 
 from ssam import (
@@ -21,8 +22,11 @@ from ssam import (
     polynomial_poisson_features,
     polynomial_poisson_loss_components,
     train_polynomial_poisson_pinn,
+    write_training_history,
 )
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG = {
     # Optional human-readable prefix for the timestamped run directory.
@@ -41,6 +45,7 @@ CONFIG = {
         "bias": True,
         "parameter_init": {
             "type": "identity",
+            "seed": 23,
             "rescaling": {
                 "mode": "layerwise",
                 "log_scale_std": 0.5,
@@ -86,10 +91,15 @@ CONFIG = {
             "normalized": False,
             "antithetic": True,
             "preserve_buffers": True,
+            "seed": 23,
         },
         "optimizer": {"name": "sgd", "momentum": 0.0},
         "seed": 23,
+        "batch_seed": 23,
         "device": "auto",
+    },
+    "visualization": {
+        "training_history": {"smoothing_window": 1, "loss_start_step": 0},
     },
 }
 
@@ -104,14 +114,13 @@ def main() -> None:
         configs[algorithm]["training"]["algorithm"] = algorithm
     run = create_run_artifacts(
         {"run": copy.deepcopy(CONFIG["run"]), "algorithms": configs},
-        pinn_config["output_dir"],
+        PROJECT_ROOT / pinn_config["output_dir"],
         "polynomial_poisson_pinn",
     )
     output_dir = run.output_dir
 
     reference_config = configs[algorithms[0]]
     points = build_polynomial_poisson_points(reference_config)
-    torch.manual_seed(int(CONFIG["training"]["seed"]))
     reference = build_model(reference_config)
     initial_state = copy.deepcopy(reference.state_dict())
 
@@ -239,11 +248,21 @@ def main() -> None:
         exact_polynomial_poisson_solution,
         output_dir / "solutions.png",
     )
-    plot_pinn_training_history(results, output_dir / "training_history.png")
+    history_plot = CONFIG["visualization"]["training_history"]
+    plot_pinn_training_history(
+        results,
+        output_dir / "training_history.png",
+        smoothing_window=int(history_plot["smoothing_window"]),
+        loss_start_step=int(history_plot["loss_start_step"]),
+    )
+    write_training_history(results, output_dir / "training_history.json")
     (output_dir / "metrics.json").write_text(
         json.dumps(
             {
                 "initial_average_sharpness": asdict(initial_sharpness),
+                "training": {
+                    name: result.config for name, result in results.items()
+                },
                 "algorithms": {
                     name: asdict(value) for name, value in metrics.items()
                 },

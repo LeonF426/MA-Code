@@ -13,6 +13,9 @@ from .average_sharpness import AverageSharpnessInterpolationResult
 from .trainers import TrainingResult
 
 
+_GAUSSIAN_MEAN_COLOR = "#66C2A5"
+
+
 def _pyplot(show: bool = False):
     try:
         import matplotlib
@@ -537,7 +540,11 @@ def plot_pinn_training_history(
                     label=f"{label} · {suffix}",
                     smoothing_window=smoothing_window,
                     minimum_step=loss_start_step,
-                    color=f"C{result_index % 10}",
+                    color=(
+                        _GAUSSIAN_MEAN_COLOR
+                        if key == gaussian_key
+                        else f"C{result_index % 10}"
+                    ),
                     linestyle=style,
                 )
                 if plotted is not None:
@@ -643,6 +650,173 @@ def plot_poisson_solutions(
             axis.set(xlabel="x", ylabel="y", title=title)
             fig.colorbar(image, ax=axis, shrink=0.8)
     fig.tight_layout()
+    return _finish(fig, path, show)
+
+
+def plot_poisson_forcing_sensitivity(
+    sensitivities: Mapping[str, object],
+    points,
+    path: str | Path | None = None,
+    show: bool = False,
+    *,
+    laplace_sensitivities: Mapping[str, object] | None = None,
+):
+    """Plot the original RHS, fixed-model responses, and optional Laplace bands."""
+
+    from .pinn import poisson_forcing
+
+    if not sensitivities:
+        raise ValueError("At least one forcing-sensitivity result is required")
+    plt = _pyplot(show)
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.2))
+    fig.suptitle("Frozen-model sensitivity to Poisson RHS scaling", fontsize=14)
+
+    resolution = int(points.evaluation_resolution)
+    original_rhs = poisson_forcing(
+        points.evaluation,
+        forcing_scale=1.0,
+    ).detach().cpu()
+    image = axes[0].imshow(
+        original_rhs.reshape(resolution, resolution).T.numpy(),
+        origin="lower",
+        extent=(0.0, 1.0, 0.0, 1.0),
+        aspect="equal",
+        cmap="viridis",
+    )
+    axes[0].set(
+        xlabel="x",
+        ylabel="y",
+        title=r"Original RHS  $f=2\pi^2\sin(\pi x)\sin(\pi y)$",
+    )
+    fig.colorbar(image, ax=axes[0], shrink=0.8, label="f(x, y)")
+
+    solution_error_series = []
+    residual_series = []
+    for label, sensitivity in sensitivities.items():
+        evaluations = sorted(
+            sensitivity.evaluations,
+            key=lambda evaluation: evaluation.forcing_scale,
+        )
+        if not evaluations:
+            raise ValueError("A forcing-sensitivity result has no evaluations")
+        scales = np.asarray(
+            [evaluation.forcing_scale for evaluation in evaluations],
+            dtype=float,
+        )
+        solution_error = np.asarray(
+            [
+                evaluation.nominal_normalized_l2_error
+                for evaluation in evaluations
+            ],
+            dtype=float,
+        )
+        residual = np.asarray(
+            [evaluation.pde_residual_rmse for evaluation in evaluations],
+            dtype=float,
+        )
+        solution_line = axes[1].plot(
+            scales,
+            solution_error,
+            marker="o",
+            linewidth=2,
+            label=label,
+        )[0]
+        residual_line = axes[2].plot(
+            scales,
+            residual,
+            marker="o",
+            linewidth=2,
+            label=label,
+        )[0]
+        solution_error_series.append(solution_error)
+        residual_series.append(residual)
+
+        laplace = (
+            None
+            if laplace_sensitivities is None
+            else laplace_sensitivities.get(label)
+        )
+        if laplace is not None:
+            laplace_evaluations = sorted(
+                laplace.evaluations,
+                key=lambda evaluation: evaluation.forcing_scale,
+            )
+            laplace_scales = np.asarray(
+                [evaluation.forcing_scale for evaluation in laplace_evaluations],
+                dtype=float,
+            )
+            solution_low = np.asarray(
+                [
+                    evaluation.nominal_normalized_l2_error.confidence_low
+                    for evaluation in laplace_evaluations
+                ],
+                dtype=float,
+            )
+            solution_high = np.asarray(
+                [
+                    evaluation.nominal_normalized_l2_error.confidence_high
+                    for evaluation in laplace_evaluations
+                ],
+                dtype=float,
+            )
+            residual_low = np.asarray(
+                [
+                    evaluation.pde_residual_rmse.confidence_low
+                    for evaluation in laplace_evaluations
+                ],
+                dtype=float,
+            )
+            residual_high = np.asarray(
+                [
+                    evaluation.pde_residual_rmse.confidence_high
+                    for evaluation in laplace_evaluations
+                ],
+                dtype=float,
+            )
+            confidence_percent = 100.0 * laplace.confidence_level
+            axes[1].fill_between(
+                laplace_scales,
+                solution_low,
+                solution_high,
+                color=solution_line.get_color(),
+                alpha=0.18,
+                linewidth=0.0,
+                label=f"{label} Laplace {confidence_percent:g}%",
+            )
+            axes[2].fill_between(
+                laplace_scales,
+                residual_low,
+                residual_high,
+                color=residual_line.get_color(),
+                alpha=0.18,
+                linewidth=0.0,
+                label=f"{label} Laplace {confidence_percent:g}%",
+            )
+            solution_error_series.extend((solution_low, solution_high))
+            residual_series.extend((residual_low, residual_high))
+
+    for axis in axes[1:]:
+        axis.axvline(
+            1.0,
+            color="black",
+            linestyle=":",
+            linewidth=1.5,
+            label="original RHS",
+        )
+        axis.set_xlabel("RHS scale a in -Delta u = a f")
+        axis.grid(alpha=0.25)
+        axis.legend(frameon=False)
+    axes[1].set_title("Solution mismatch")
+    axes[1].set_ylabel("Nominal-normalized L2 solution error")
+    axes[2].set_title("PDE residual mismatch")
+    axes[2].set_ylabel("PDE residual RMSE")
+    # Keep zero-clipped lower credible bounds readable. A logarithmic scale is
+    # still selected automatically when every value is positive and spans more
+    # than two orders of magnitude.
+    _set_readable_y_scale(axes[1], solution_error_series)
+    _set_readable_y_scale(axes[2], residual_series)
+
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     return _finish(fig, path, show)
 
 

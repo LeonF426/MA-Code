@@ -14,6 +14,29 @@ def test_unknown_schedule():
         build_schedule({"name": "unknown"})
 
 
+def test_inverse_time_alpha_controls_decay_rate():
+    slow = build_schedule(
+        {"name": "inverse_time", "initial": 1.0, "alpha": 0.5}
+    )
+    fast = build_schedule(
+        {"name": "inverse_time", "initial": 1.0, "alpha": 2.0}
+    )
+
+    assert slow(4) == pytest.approx(1.0 / 3.0)
+    assert fast(4) == pytest.approx(1.0 / 9.0)
+
+
+def test_tamed_rejects_vestigial_update_type():
+    with pytest.raises(ValueError, match="Unknown tamed"):
+        build_learning_rate_policy(
+            {
+                "name": "tamed",
+                "type": "sgd",
+                "inserted_lr": {"name": "constant", "value": 0.1},
+            }
+        )
+
+
 def test_static_learning_rate_policy_uses_uniform_interface():
     policy = build_learning_rate_policy({"name": "constant", "value": 0.2})
     assert policy(7, 3.0, 99.0) == 0.2

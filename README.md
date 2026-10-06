@@ -6,6 +6,10 @@ stochastically perturbed S-SAM updates. The former root-level experiment scripts
 have been replaced by reusable modules; [`main.py`](main.py) is now only a concrete
 mixed-linear example.
 
+Before adding or interpreting an experiment, read
+[`EXPERIMENT_REPRODUCIBILITY.md`](EXPERIMENT_REPRODUCIBILITY.md). It defines the
+repository's seed, mini-batch, configuration-validation, and artifact contract.
+
 ## Install and run
 
 ```bash
@@ -417,6 +421,65 @@ Monte Carlo confidence interval to JSON. It also plots exact/predicted/error
 fields and clean versus Gaussian-averaged loss histories. Missing Gaussian curves
 (for example for SGD) are skipped.
 
+The final SGD and S-SAM parameters are also evaluated, without retraining, under
+a configurable family of alternative PDEs
+`-Delta u = forcing_scale * f`. The default scales are `0.5`, `0.75`, `1.0`,
+`1.25`, and `1.5`. `metrics.json` stores the nominal-normalized L2 solution error
+and PDE-residual RMSE at every scale, changes from the nominal PDE, worst/mean
+values, and worst metric change per unit forcing-scale perturbation under each algorithm's
+`forcing_sensitivity` entry. Each scale also records and prints the explicit RHS
+coefficient in `a * 2*pi^2*sin(pi*x)*sin(pi*y)` form, its RMSE, and the RMSE of
+its change from the nominal RHS, paired with the resulting model errors. Since
+the PDE is linear with homogeneous boundary
+conditions, the reference solution at a scale `a` is exactly `a * u*`. The model
+prediction and its Laplacian are computed once per algorithm, keeping this sweep
+much cheaper than training or repeated sharpness evaluation.
+
+The console labels the scale-one equation as `ORIGINAL RHS`, and
+`forcing_sensitivity.png` combines its spatial field with SGD/S-SAM curves for
+solution mismatch and PDE-residual mismatch. The solution metric uses the fixed
+nominal exact-solution norm in its denominator,
+`||u_theta - a*u*||_2 / ||u*||_2`, so equally sized scale changes above and below
+one are compared symmetrically. The ordinary relative L2 error remains in the
+nominal final metrics as the conventional PINN accuracy measure. RHS scaling is uncertainty in the
+PDE specification (problem/input uncertainty), not classical model uncertainty.
+The separately reported Gaussian average sharpness perturbs the trained network
+parameters and is therefore a local parameter-robustness proxy. It should not be
+interpreted as a calibrated Bayesian posterior without an additional inference
+method such as an ensemble, Laplace approximation, or Bayesian neural network.
+
+The example now additionally fits a post-training diagonal generalized
+Gauss-Newton Laplace approximation around each final parameter vector. Random
+Rademacher projections estimate the curvature diagonal without materializing a
+dense parameter Hessian. An explicit prior precision makes the posterior
+precision positive, and the linearized delta method propagates the resulting
+parameter covariance to confidence bands on nominal-normalized L2 solution error
+and PDE-residual RMSE in `forcing_sensitivity.png`. Full diagnostics and intervals are written to
+each algorithm's `laplace_sensitivity` metrics entry. The prior precision,
+likelihood precision, number of curvature probes, confidence level, and seed are
+all explicit in `CONFIG["pinn"]["evaluation"]["laplace"]` and saved with the run.
+
+This is intentionally labeled a *local approximation*. A strict Laplace
+posterior is centered at a MAP solution, whereas an S-SAM endpoint minimizes a
+Gaussian-smoothed objective and need not be stationary for the clean loss. The
+reported clean gradient norm exposes this limitation. The interval width also
+depends on the chosen prior and likelihood precisions; without calibrating them,
+the bands compare local curvature under common assumptions but are not calibrated
+credible intervals. These choices follow the scalable diagonal-GGN and
+linearized-predictive variants reviewed in [Laplace Redux](https://arxiv.org/abs/2106.14806).
+The Gaussian residual likelihood interpretation for PDE and boundary terms is
+the construction used in [B-PINNs](https://arxiv.org/abs/2003.06097).
+
+The original deterministic RHS sweep remains useful as a controlled stress
+test, but it is not by itself a model of uncertainty. It places no probability
+distribution over parameters or functions, and its hand-selected scales have no
+calibrated probabilities. It is also only one narrow form of PDE misspecification:
+the network takes `(x, y)`, not the forcing scale, as input, so its prediction
+cannot adapt when `f` changes. Consequently the sweep measures incompatibility
+of one frozen solution with alternative PDEs; it does not propagate uncertain
+PDE inputs into a new solution. A parametric PINN `u(x, y, forcing_scale)` or a
+joint Bayesian model over solution and PDE parameters would be needed for that.
+
 Every PINN example can choose which loss components receive S-SAM's Gaussian
 average-sharpness regularization:
 
@@ -437,7 +500,8 @@ The default is both components. SGD always uses the complete clean objective.
 Training-history plots omit the Gaussian curve for clean-only components.
 
 The reusable API is `build_poisson_points`, `train_poisson_pinn`,
-`evaluate_poisson_pinn`, `plot_poisson_solutions`, and
+`evaluate_poisson_pinn`, `evaluate_poisson_forcing_sensitivity`,
+`plot_poisson_solutions`, and
 `plot_pinn_training_history`. `evaluate_average_sharpness_closure` provides the
 same coordinate-derivative-safe sharpness path for other physics-informed losses.
 
