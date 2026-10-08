@@ -107,10 +107,10 @@ class PoissonLaplaceSensitivity:
     evaluations: tuple[PoissonLaplaceForcingEvaluation, ...]
 
 
-def exact_poisson_solution(coordinates: torch.Tensor) -> torch.Tensor:
+def exact_poisson_solution(coordinates: torch.Tensor,a: float = 1.0) -> torch.Tensor:
     """Return ``sin(pi*x) sin(pi*y)`` at ``(x, y)`` coordinates."""
 
-    return torch.sin(math.pi * coordinates[:, 0]) * torch.sin(
+    return a*torch.sin(math.pi * coordinates[:, 0]) * torch.sin(
         math.pi * coordinates[:, 1]
     )
 

@@ -51,9 +51,9 @@ CONFIG = {
                 "preserve_function": False,
                 "mode": "layerwise",
                 "log_scale_std": 0.04,
-                "seed": 72423425,
+                "seed": 72454,
             },
-            "seed": 139396
+            "seed": 13935789
         },
     },
     "data": {
@@ -61,7 +61,7 @@ CONFIG = {
         "interior_points": 512,
         "boundary_points": 256,
         "evaluation_resolution": 51,
-        "seed": 17532,
+        "seed": 175,
     },
     "pinn": {
         "pde_weight": 1.0,
@@ -72,31 +72,31 @@ CONFIG = {
         "evaluation": {
             "sharpness_scale": 1e-1,
             "sharpness_samples": 100,
-            "sharpness_seed": 102387092,
+            "sharpness_seed": 1550238,
             "antithetic": True,
             "interpolation_points": 11,
             "interpolation_samples": 32,
             # Evaluate the final, frozen parameters against alternative PDEs
             # -Delta u = forcing_scale * f. No retraining is performed.
-            "forcing_scales": [0.5, 0.75, 1.0, 1.25, 1.5],
+            "forcing_scales": [0.95, 0.96, 0.97, 0.98, 0.99, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05],
             "nominal_forcing_scale": 1.0,
             # Local epistemic-uncertainty approximation around each final
             # parameter vector. These bands do not randomize the RHS.
             "laplace": {
-                "enabled": True,
+                "enabled": False,
                 "prior_precision": 100.0,
                 "likelihood_precision": 1.0,
                 "curvature_probes": 16,
                 "confidence_level": 0.95,
-                "seed": 27181,
+                "seed": 27,
             },
         },
     },
     "training": {
         "steps": 1200,
-        "batch_size": 256,
+        "batch_size": 128,
         "learning_rate": {"name": "tamed",
-                          "inserted_lr":{"name": "constant", "value": 2e-2}},
+                          "inserted_lr":{"name": "constant", "value": 2e-3}},
         "sharpness_scale": {
             "name": "inverse_time",
             "initial": 1,
@@ -113,15 +113,15 @@ CONFIG = {
             "normalized": False,
             "antithetic": True,
             "preserve_buffers": True,
-            "seed": 224137,
+            "seed": 22437,
         },
         "optimizer": {"name": "sgd", "momentum": 0.0},
-        "seed": 2243,
-        "batch_seed": 2213,
+        "seed": 22412345,
+        "batch_seed": 221382347,
         "device": "auto",
     },
     "visualization": {
-        "training_history": {"smoothing_window": 1, "loss_start_step": 0},
+        "training_history": {"smoothing_window": 10, "loss_start_step": 10},
     },
 }
 
