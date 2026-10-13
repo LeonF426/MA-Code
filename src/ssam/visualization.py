@@ -667,9 +667,22 @@ def plot_poisson_forcing_sensitivity(
 
     if not sensitivities:
         raise ValueError("At least one forcing-sensitivity result is required")
+    modes = {
+        getattr(sensitivity, "forcing_mode", "scaled")
+        for sensitivity in sensitivities.values()
+    }
+    if len(modes) != 1:
+        raise ValueError("All forcing sensitivities in one plot must use the same mode")
+    forcing_mode = modes.pop()
+    if forcing_mode not in {"scaled", "additive"}:
+        raise ValueError("forcing_mode must be 'scaled' or 'additive'")
     plt = _pyplot(show)
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.2))
-    fig.suptitle("Frozen-model sensitivity to Poisson RHS scaling", fontsize=14)
+    family_label = "scaling" if forcing_mode == "scaled" else "additive shifts"
+    fig.suptitle(
+        f"Frozen-model sensitivity to Poisson RHS {family_label}",
+        fontsize=14,
+    )
 
     resolution = int(points.evaluation_resolution)
     original_rhs = poisson_forcing(
@@ -695,12 +708,23 @@ def plot_poisson_forcing_sensitivity(
     for label, sensitivity in sensitivities.items():
         evaluations = sorted(
             sensitivity.evaluations,
-            key=lambda evaluation: evaluation.forcing_scale,
+            key=lambda evaluation: getattr(
+                evaluation,
+                "forcing_perturbation",
+                evaluation.forcing_scale,
+            ),
         )
         if not evaluations:
             raise ValueError("A forcing-sensitivity result has no evaluations")
-        scales = np.asarray(
-            [evaluation.forcing_scale for evaluation in evaluations],
+        perturbations = np.asarray(
+            [
+                getattr(
+                    evaluation,
+                    "forcing_perturbation",
+                    evaluation.forcing_scale,
+                )
+                for evaluation in evaluations
+            ],
             dtype=float,
         )
         solution_error = np.asarray(
@@ -715,14 +739,14 @@ def plot_poisson_forcing_sensitivity(
             dtype=float,
         )
         solution_line = axes[1].plot(
-            scales,
+            perturbations,
             solution_error,
             marker="o",
             linewidth=2,
             label=label,
         )[0]
         residual_line = axes[2].plot(
-            scales,
+            perturbations,
             residual,
             marker="o",
             linewidth=2,
@@ -739,10 +763,21 @@ def plot_poisson_forcing_sensitivity(
         if laplace is not None:
             laplace_evaluations = sorted(
                 laplace.evaluations,
-                key=lambda evaluation: evaluation.forcing_scale,
+                key=lambda evaluation: getattr(
+                    evaluation,
+                    "forcing_perturbation",
+                    evaluation.forcing_scale,
+                ),
             )
-            laplace_scales = np.asarray(
-                [evaluation.forcing_scale for evaluation in laplace_evaluations],
+            laplace_perturbations = np.asarray(
+                [
+                    getattr(
+                        evaluation,
+                        "forcing_perturbation",
+                        evaluation.forcing_scale,
+                    )
+                    for evaluation in laplace_evaluations
+                ],
                 dtype=float,
             )
             solution_low = np.asarray(
@@ -775,7 +810,7 @@ def plot_poisson_forcing_sensitivity(
             )
             confidence_percent = 100.0 * laplace.confidence_level
             axes[1].fill_between(
-                laplace_scales,
+                laplace_perturbations,
                 solution_low,
                 solution_high,
                 color=solution_line.get_color(),
@@ -784,7 +819,7 @@ def plot_poisson_forcing_sensitivity(
                 label=f"{label} Laplace {confidence_percent:g}%",
             )
             axes[2].fill_between(
-                laplace_scales,
+                laplace_perturbations,
                 residual_low,
                 residual_high,
                 color=residual_line.get_color(),
@@ -795,15 +830,25 @@ def plot_poisson_forcing_sensitivity(
             solution_error_series.extend((solution_low, solution_high))
             residual_series.extend((residual_low, residual_high))
 
+    first_sensitivity = next(iter(sensitivities.values()))
+    nominal_perturbation = getattr(
+        first_sensitivity,
+        "nominal_forcing_perturbation",
+        first_sensitivity.nominal_forcing_scale,
+    )
     for axis in axes[1:]:
         axis.axvline(
-            1.0,
+            nominal_perturbation,
             color="black",
             linestyle=":",
             linewidth=1.5,
             label="original RHS",
         )
-        axis.set_xlabel("RHS scale a in -Delta u = a f")
+        axis.set_xlabel(
+            "RHS scale a in -Delta u = a f"
+            if forcing_mode == "scaled"
+            else "Additive epsilon in -Delta u = f + epsilon"
+        )
         axis.grid(alpha=0.25)
         axis.legend(frameon=False)
     axes[1].set_title("Solution mismatch")

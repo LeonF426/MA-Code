@@ -7,6 +7,7 @@ from torch import nn
 from ssam import (
     build_model,
     build_poisson_points,
+    constant_poisson_solution,
     evaluate_poisson_forcing_sensitivity,
     evaluate_poisson_laplace_sensitivity,
     evaluate_poisson_pinn,
@@ -17,6 +18,7 @@ from ssam import (
     plot_pinn_training_history,
     plot_poisson_forcing_sensitivity,
     plot_poisson_solutions,
+    poisson_forcing,
     train,
     train_poisson_pinn,
 )
@@ -92,6 +94,33 @@ def test_poisson_residual_supports_scaled_forcing():
     torch.testing.assert_close(residual, expected, atol=1e-9, rtol=1e-9)
 
 
+def test_poisson_forcing_and_residual_support_additive_constant_uncertainty():
+    points = build_poisson_points(_config())
+    epsilon = 0.4
+    forcing = poisson_forcing(
+        points.interior,
+        forcing_additive=epsilon,
+    )
+    nominal = poisson_forcing(points.interior)
+    torch.testing.assert_close(
+        forcing,
+        nominal + epsilon * torch.ones_like(nominal),
+    )
+
+    residual = poisson_residual(
+        ExactSolution(),
+        points.interior,
+        create_graph=False,
+        forcing_additive=epsilon,
+    )
+    torch.testing.assert_close(
+        residual,
+        torch.full_like(residual, -epsilon),
+        atol=1e-9,
+        rtol=1e-9,
+    )
+
+
 def test_poisson_forcing_sensitivity_evaluates_frozen_model_once_per_sweep():
     config = _config("sgd")
     points = build_poisson_points(config)
@@ -124,6 +153,43 @@ def test_poisson_forcing_sensitivity_evaluates_frozen_model_once_per_sweep():
         result.max_nominal_normalized_l2_error_change_per_unit_scale
         == pytest.approx(1.0)
     )
+
+
+def test_poisson_forcing_sensitivity_supports_additive_constant_family():
+    config = _config("sgd")
+    points = build_poisson_points(config)
+    result = evaluate_poisson_forcing_sensitivity(
+        TrainableExactSolution(),
+        points,
+        [-0.5, 0.0, 0.5],
+        forcing_mode="additive",
+        nominal_forcing_perturbation=0.0,
+        additive_solution_terms=20,
+    )
+
+    nominal = result.evaluations[1]
+    increased = result.evaluations[2]
+    assert result.forcing_mode == "additive"
+    assert result.nominal_forcing_perturbation == 0.0
+    assert result.additive_solution_terms == 20
+    assert nominal.nominal_normalized_l2_error == pytest.approx(0.0, abs=1e-12)
+    assert nominal.pde_residual_rmse == pytest.approx(0.0, abs=1e-8)
+    assert increased.forcing_scale == 1.0
+    assert increased.forcing_perturbation == 0.5
+    assert increased.rhs_constant == 0.5
+    assert increased.rhs_change_rmse_from_nominal == pytest.approx(0.5)
+    assert increased.pde_residual_rmse == pytest.approx(0.5, abs=1e-8)
+
+    additive_solution = constant_poisson_solution(
+        points.evaluation,
+        series_terms=20,
+    )
+    nominal_solution = exact_poisson_solution(points.evaluation)
+    expected_error = float(
+        torch.linalg.vector_norm(0.5 * additive_solution)
+        / torch.linalg.vector_norm(nominal_solution)
+    )
+    assert increased.nominal_normalized_l2_error == pytest.approx(expected_error)
 
 
 def test_poisson_forcing_sensitivity_requires_included_nonzero_nominal_scale():
@@ -180,6 +246,31 @@ def test_poisson_laplace_sensitivity_produces_local_metric_intervals():
             assert 0.0 <= metric.confidence_low <= metric.confidence_high
 
 
+def test_poisson_laplace_sensitivity_supports_additive_constant_family():
+    config = _config("sgd")
+    points = build_poisson_points(config)
+    result = evaluate_poisson_laplace_sensitivity(
+        TrainableExactSolution(),
+        points,
+        [-0.25, 0.0, 0.25],
+        prior_precision=10.0,
+        curvature_probes=2,
+        forcing_mode="additive",
+        nominal_forcing_perturbation=0.0,
+        additive_solution_terms=12,
+    )
+
+    assert result.forcing_mode == "additive"
+    assert result.nominal_forcing_perturbation == 0.0
+    assert result.additive_solution_terms == 12
+    assert [value.forcing_perturbation for value in result.evaluations] == [
+        -0.25,
+        0.0,
+        0.25,
+    ]
+    assert all(value.forcing_scale == 1.0 for value in result.evaluations)
+
+
 def test_poisson_forcing_sensitivity_plot_shows_original_rhs_and_responses():
     config = _config("sgd")
     points = build_poisson_points(config)
@@ -207,6 +298,28 @@ def test_poisson_forcing_sensitivity_plot_shows_original_rhs_and_responses():
     assert len(titled_axes["PDE residual mismatch"].lines) == 2
     assert titled_axes["Solution mismatch"].collections
     assert titled_axes["PDE residual mismatch"].collections
+
+
+def test_poisson_forcing_sensitivity_plot_labels_additive_epsilon():
+    config = _config("sgd")
+    points = build_poisson_points(config)
+    sensitivity = evaluate_poisson_forcing_sensitivity(
+        TrainableExactSolution(),
+        points,
+        [-0.5, 0.0, 0.5],
+        forcing_mode="additive",
+        nominal_forcing_perturbation=0.0,
+    )
+
+    figure = plot_poisson_forcing_sensitivity(
+        {"exact": sensitivity},
+        points,
+    )
+
+    assert "additive shifts" in figure._suptitle.get_text()
+    assert "epsilon" in figure.axes[1].get_xlabel()
+    nominal_line = figure.axes[1].lines[-1]
+    assert set(nominal_line.get_xdata()) == {0.0}
 
 
 def test_ssam_pinn_tracks_clean_and_gaussian_component_losses():

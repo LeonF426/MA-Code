@@ -422,26 +422,33 @@ fields and clean versus Gaussian-averaged loss histories. Missing Gaussian curve
 (for example for SGD) are skipped.
 
 The final SGD and S-SAM parameters are also evaluated, without retraining, under
-a configurable family of alternative PDEs
-`-Delta u = forcing_scale * f`. The default scales are `0.5`, `0.75`, `1.0`,
-`1.25`, and `1.5`. `metrics.json` stores the nominal-normalized L2 solution error
-and PDE-residual RMSE at every scale, changes from the nominal PDE, worst/mean
-values, and worst metric change per unit forcing-scale perturbation under each algorithm's
-`forcing_sensitivity` entry. Each scale also records and prints the explicit RHS
-coefficient in `a * 2*pi^2*sin(pi*x)*sin(pi*y)` form, its RMSE, and the RMSE of
-its change from the nominal RHS, paired with the resulting model errors. Since
-the PDE is linear with homogeneous boundary
-conditions, the reference solution at a scale `a` is exactly `a * u*`. The model
-prediction and its Laplacian are computed once per algorithm, keeping this sweep
-much cheaper than training or repeated sharpness evaluation.
+one of two configurable alternative-PDE families:
 
-The console labels the scale-one equation as `ORIGINAL RHS`, and
+```text
+scaled:    -Delta u = a*f
+additive:  -Delta u = f + epsilon*g,  g(x,y) = 1
+```
+
+Set `CONFIG["pinn"]["evaluation"]["forcing_uncertainty"]["mode"]` to either
+`"scaled"` or `"additive"`. Both value grids and their nominal values are kept
+in that config section, so changing the mode is sufficient to switch sweeps.
+For the additive family, the zero-Dirichlet response to `g=1` is evaluated with
+a configurable truncated double-sine series. `metrics.json` stores the
+nominal-normalized L2 solution error and PDE-residual RMSE at every perturbation,
+changes from the nominal PDE, worst/mean values, and worst metric change per unit
+perturbation under each algorithm's `forcing_sensitivity` entry. Each point also
+records the sine coefficient, additive constant, RHS RMSE, and RMSE of its change
+from the nominal RHS. The model prediction and its Laplacian are computed once
+per algorithm, keeping either sweep much cheaper than training or repeated
+sharpness evaluation.
+
+The console labels the nominal equation as `ORIGINAL RHS`, and
 `forcing_sensitivity.png` combines its spatial field with SGD/S-SAM curves for
 solution mismatch and PDE-residual mismatch. The solution metric uses the fixed
 nominal exact-solution norm in its denominator,
-`||u_theta - a*u*||_2 / ||u*||_2`, so equally sized scale changes above and below
-one are compared symmetrically. The ordinary relative L2 error remains in the
-nominal final metrics as the conventional PINN accuracy measure. RHS scaling is uncertainty in the
+so perturbations on either side of the nominal PDE are compared consistently.
+The ordinary relative L2 error remains in the
+nominal final metrics as the conventional PINN accuracy measure. RHS perturbation is uncertainty in the
 PDE specification (problem/input uncertainty), not classical model uncertainty.
 The separately reported Gaussian average sharpness perturbs the trained network
 parameters and is therefore a local parameter-robustness proxy. It should not be
@@ -477,8 +484,20 @@ calibrated probabilities. It is also only one narrow form of PDE misspecificatio
 the network takes `(x, y)`, not the forcing scale, as input, so its prediction
 cannot adapt when `f` changes. Consequently the sweep measures incompatibility
 of one frozen solution with alternative PDEs; it does not propagate uncertain
-PDE inputs into a new solution. A parametric PINN `u(x, y, forcing_scale)` or a
+PDE inputs into a new solution. A parametric PINN such as `u(x, y, a, epsilon)` or a
 joint Bayesian model over solution and PDE parameters would be needed for that.
+
+All random streams in `examples/poisson_pinn.py` are derived from the single
+module-level `SEED` using distinct fixed offsets. To repeat the same experiment
+with several base seeds, use the separate outer-loop script:
+
+```bash
+python examples/run_poisson_pinn_seeds.py --runs 10 --start-seed 100
+```
+
+`--seed-step` controls the increment between seeds. Every repetition receives a
+fresh config from `build_config(seed)` and writes to the normal non-overwriting
+Poisson artifact directory.
 
 Every PINN example can choose which loss components receive S-SAM's Gaussian
 average-sharpness regularization:

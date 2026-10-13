@@ -43,7 +43,7 @@ class PoissonMetrics:
 
 @dataclass(frozen=True)
 class PoissonForcingEvaluation:
-    """Metrics for a fixed model evaluated against one scaled Poisson RHS."""
+    """Metrics for a fixed model evaluated against one alternative Poisson RHS."""
 
     forcing_scale: float
     rhs_sine_coefficient: float
@@ -53,11 +53,14 @@ class PoissonForcingEvaluation:
     pde_residual_rmse: float
     nominal_normalized_l2_error_change_from_nominal: float
     pde_residual_rmse_change_from_nominal: float
+    forcing_mode: str = "scaled"
+    forcing_perturbation: float = 1.0
+    rhs_constant: float = 0.0
 
 
 @dataclass(frozen=True)
 class PoissonForcingSensitivity:
-    """Sensitivity of a fixed model to multiplicative forcing perturbations."""
+    """Sensitivity of a fixed model to multiplicative or additive RHS changes."""
 
     nominal_forcing_scale: float
     evaluations: tuple[PoissonForcingEvaluation, ...]
@@ -67,6 +70,9 @@ class PoissonForcingSensitivity:
     worst_pde_residual_rmse: float
     max_nominal_normalized_l2_error_change_per_unit_scale: float
     max_pde_residual_rmse_change_per_unit_scale: float
+    forcing_mode: str = "scaled"
+    nominal_forcing_perturbation: float = 1.0
+    additive_solution_terms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,8 @@ class PoissonLaplaceForcingEvaluation:
     forcing_scale: float
     nominal_normalized_l2_error: LaplaceMetric
     pde_residual_rmse: LaplaceMetric
+    forcing_mode: str = "scaled"
+    forcing_perturbation: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -105,14 +113,57 @@ class PoissonLaplaceSensitivity:
     posterior_parameter_std_mean: float
     posterior_parameter_std_max: float
     evaluations: tuple[PoissonLaplaceForcingEvaluation, ...]
+    forcing_mode: str = "scaled"
+    nominal_forcing_perturbation: float = 1.0
+    additive_solution_terms: int | None = None
 
 
-def exact_poisson_solution(coordinates: torch.Tensor,a: float = 1.0) -> torch.Tensor:
+def exact_poisson_solution(coordinates: torch.Tensor, a: float = 1.0) -> torch.Tensor:
     """Return ``sin(pi*x) sin(pi*y)`` at ``(x, y)`` coordinates."""
 
-    return a*torch.sin(math.pi * coordinates[:, 0]) * torch.sin(
+    return a * torch.sin(math.pi * coordinates[:, 0]) * torch.sin(
         math.pi * coordinates[:, 1]
     )
+
+
+def constant_poisson_solution(
+    coordinates: torch.Tensor,
+    *,
+    series_terms: int = 50,
+) -> torch.Tensor:
+    r"""Solve ``-Delta w = 1`` on the unit square with ``w = 0`` at its boundary.
+
+    The solution is evaluated through the double sine series
+
+    ``sum 16 sin(m*pi*x) sin(n*pi*y) / (pi^4*m*n*(m^2+n^2))``
+
+    over the requested number of positive odd modes in each dimension. This is
+    the response ``g=1`` needed by the additive forcing family ``f + eps*g``.
+    """
+
+    terms = int(series_terms)
+    if terms < 1:
+        raise ValueError("series_terms must be positive")
+    if coordinates.ndim != 2 or coordinates.shape[1] != 2:
+        raise ValueError("coordinates must have shape (N, 2)")
+    modes = torch.arange(
+        1,
+        2 * terms,
+        2,
+        device=coordinates.device,
+        dtype=coordinates.dtype,
+    )
+    mode_x = modes[:, None]
+    mode_y = modes[None, :]
+    coefficients = 16.0 / (
+        math.pi**4
+        * mode_x
+        * mode_y
+        * (mode_x.square() + mode_y.square())
+    )
+    sin_x = torch.sin(math.pi * coordinates[:, :1] * modes)
+    sin_y = torch.sin(math.pi * coordinates[:, 1:] * modes)
+    return torch.einsum("im,mn,in->i", sin_x, coefficients, sin_y)
 
 
 def _forcing_scale(value: float) -> float:
@@ -122,18 +173,63 @@ def _forcing_scale(value: float) -> float:
     return scale
 
 
+def _forcing_additive(value: float) -> float:
+    additive = float(value)
+    if not math.isfinite(additive):
+        raise ValueError("forcing_additive must be finite")
+    return additive
+
+
+def _forcing_mode(value: str) -> str:
+    mode = str(value).strip().lower()
+    if mode not in {"scaled", "additive"}:
+        raise ValueError("forcing_mode must be 'scaled' or 'additive'")
+    return mode
+
+
+def _forcing_parameters(mode: str, perturbation: float) -> tuple[float, float]:
+    """Return ``(scale, additive)`` for a configured perturbation value."""
+
+    if mode == "scaled":
+        return perturbation, 0.0
+    return 1.0, perturbation
+
+
+def _forcing_perturbation(mode: str, value: float) -> float:
+    return _forcing_scale(value) if mode == "scaled" else _forcing_additive(value)
+
+
+def _exact_solution_for_forcing(
+    coordinates: torch.Tensor,
+    *,
+    forcing_scale: float,
+    forcing_additive: float,
+    additive_solution_terms: int,
+) -> torch.Tensor:
+    return (
+        forcing_scale * exact_poisson_solution(coordinates)
+        + forcing_additive
+        * constant_poisson_solution(
+            coordinates,
+            series_terms=additive_solution_terms,
+        )
+    )
+
+
 def poisson_forcing(
     coordinates: torch.Tensor,
     *,
     forcing_scale: float = 1.0,
+    forcing_additive: float = 0.0,
 ) -> torch.Tensor:
-    """Return the scaled forcing in ``-Delta u = forcing_scale * f``."""
+    """Return ``forcing_scale * f + forcing_additive * 1``."""
 
     return (
         _forcing_scale(forcing_scale)
         * 2.0
         * math.pi**2
         * exact_poisson_solution(coordinates)
+        + _forcing_additive(forcing_additive) * torch.ones_like(coordinates[:, 0])
     )
 
 
@@ -152,8 +248,9 @@ def poisson_residual(
     *,
     create_graph: bool = True,
     forcing_scale: float = 1.0,
+    forcing_additive: float = 0.0,
 ) -> torch.Tensor:
-    """Compute ``-Delta u_theta - forcing_scale * f`` using autograd."""
+    """Compute ``-Delta u_theta - (forcing_scale*f + forcing_additive)``."""
 
     with torch.enable_grad():
         points = coordinates.detach().clone().requires_grad_(True)
@@ -178,6 +275,7 @@ def poisson_residual(
         return -laplacian - poisson_forcing(
             points,
             forcing_scale=forcing_scale,
+            forcing_additive=forcing_additive,
         )
 
 
@@ -189,6 +287,7 @@ def poisson_loss_components(
     pde_weight: float = 1.0,
     boundary_weight: float = 1.0,
     forcing_scale: float = 1.0,
+    forcing_additive: float = 0.0,
 ) -> dict[str, torch.Tensor]:
     """Return the complete weighted objective and its unweighted components."""
 
@@ -197,6 +296,7 @@ def poisson_loss_components(
         interior_points,
         create_graph=True,
         forcing_scale=forcing_scale,
+        forcing_additive=forcing_additive,
     )
     pde_loss = residual.square().mean()
     boundary_prediction = _scalar_prediction(model, boundary_points)
@@ -381,15 +481,17 @@ def evaluate_poisson_pinn(
     antithetic: bool = True,
     normalized: bool = False,
     forcing_scale: float = 1.0,
+    forcing_additive: float = 0.0,
+    additive_solution_terms: int = 50,
 ) -> PoissonMetrics:
-    """Evaluate against ``-Delta u = forcing_scale * f``.
+    """Evaluate against ``-Delta u = forcing_scale*f + forcing_additive``.
 
-    Because the boundary condition is homogeneous and the PDE is linear, the
-    exact solution for the scaled forcing is ``forcing_scale * u*``. Model
-    parameters are never changed by this evaluation.
+    The constant-forcing response used by the additive term is evaluated with
+    :func:`constant_poisson_solution`. Model parameters are never changed.
     """
 
     forcing_scale = _forcing_scale(forcing_scale)
+    forcing_additive = _forcing_additive(forcing_additive)
 
     parameter = next((value for value in model.parameters() if value.requires_grad), None)
     if parameter is None:
@@ -403,7 +505,12 @@ def evaluate_poisson_pinn(
     try:
         with torch.no_grad():
             prediction = _scalar_prediction(model, evaluation)
-            exact = forcing_scale * exact_poisson_solution(evaluation)
+            exact = _exact_solution_for_forcing(
+                evaluation,
+                forcing_scale=forcing_scale,
+                forcing_additive=forcing_additive,
+                additive_solution_terms=additive_solution_terms,
+            )
             relative_l2 = torch.linalg.vector_norm(prediction - exact) / torch.linalg.vector_norm(
                 exact
             ).clamp_min(torch.finfo(exact.dtype).eps)
@@ -413,6 +520,7 @@ def evaluate_poisson_pinn(
             evaluation,
             create_graph=False,
             forcing_scale=forcing_scale,
+            forcing_additive=forcing_additive,
         ).detach().square().mean().sqrt()
 
         sharpness = None
@@ -425,6 +533,7 @@ def evaluate_poisson_pinn(
                     pde_weight=pde_weight,
                     boundary_weight=boundary_weight,
                     forcing_scale=forcing_scale,
+                    forcing_additive=forcing_additive,
                 )["loss"]
 
             sharpness = evaluate_average_sharpness_closure(
@@ -452,34 +561,62 @@ def evaluate_poisson_forcing_sensitivity(
     points: PoissonPointSets,
     forcing_scales: list[float] | tuple[float, ...],
     *,
-    nominal_forcing_scale: float = 1.0,
+    nominal_forcing_scale: float | None = None,
+    forcing_mode: str = "scaled",
+    nominal_forcing_perturbation: float | None = None,
+    additive_solution_terms: int = 50,
 ) -> PoissonForcingSensitivity:
-    """Evaluate a fixed model under a sweep of multiplicative RHS changes.
+    """Evaluate a fixed model under scaled ``a*f`` or additive ``f+eps`` RHSs.
 
-    The model prediction and its Laplacian are evaluated only once. All scale
-    results after that are inexpensive tensor arithmetic. The two sensitivity
-    values are worst absolute secant slopes away from the nominal scale; lower
-    values indicate less metric change per unit RHS-scale perturbation.
+    ``forcing_scales`` is retained as the argument name for API compatibility;
+    in additive mode its values are epsilon. The model prediction and its
+    Laplacian are evaluated only once. Sensitivities are worst absolute secant
+    slopes away from the configured nominal perturbation.
     """
 
-    scales = tuple(_forcing_scale(value) for value in forcing_scales)
-    nominal_scale = _forcing_scale(nominal_forcing_scale)
-    if not scales:
+    mode = _forcing_mode(forcing_mode)
+    perturbations = tuple(
+        _forcing_perturbation(mode, value) for value in forcing_scales
+    )
+    if nominal_forcing_scale is not None and nominal_forcing_perturbation is not None:
+        raise ValueError(
+            "Set only one of nominal_forcing_scale and "
+            "nominal_forcing_perturbation"
+        )
+    configured_nominal = (
+        nominal_forcing_perturbation
+        if nominal_forcing_perturbation is not None
+        else nominal_forcing_scale
+    )
+    nominal_perturbation = _forcing_perturbation(
+        mode,
+        (1.0 if mode == "scaled" else 0.0)
+        if configured_nominal is None
+        else configured_nominal
+    )
+    if not perturbations:
         raise ValueError("forcing_scales must contain at least one value")
-    if len(set(scales)) != len(scales):
+    if len(set(perturbations)) != len(perturbations):
         raise ValueError("forcing_scales must not contain duplicates")
-    if nominal_scale == 0.0:
+    if mode == "scaled" and nominal_perturbation == 0.0:
         raise ValueError(
             "nominal_forcing_scale must be non-zero because it normalizes "
             "the solution error"
         )
     nominal_indices = [
         index
-        for index, scale in enumerate(scales)
-        if math.isclose(scale, nominal_scale, rel_tol=1e-12, abs_tol=1e-12)
+        for index, perturbation in enumerate(perturbations)
+        if math.isclose(
+            perturbation,
+            nominal_perturbation,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
     ]
     if not nominal_indices:
-        raise ValueError("forcing_scales must include nominal_forcing_scale")
+        raise ValueError(
+            "forcing_scales must include nominal forcing perturbation"
+        )
 
     parameter = next((value for value in model.parameters() if value.requires_grad), None)
     if parameter is None:
@@ -492,8 +629,24 @@ def evaluate_poisson_forcing_sensitivity(
         with torch.no_grad():
             prediction = _scalar_prediction(model, evaluation)
             reference_solution = exact_poisson_solution(evaluation)
-            nominal_solution_norm = torch.linalg.vector_norm(
+            additive_solution = (
+                constant_poisson_solution(
+                    evaluation,
+                    series_terms=additive_solution_terms,
+                )
+                if mode == "additive"
+                else torch.zeros_like(reference_solution)
+            )
+            nominal_scale, nominal_additive = _forcing_parameters(
+                mode,
+                nominal_perturbation,
+            )
+            nominal_solution = (
                 nominal_scale * reference_solution
+                + nominal_additive * additive_solution
+            )
+            nominal_solution_norm = torch.linalg.vector_norm(
+                nominal_solution
             ).clamp_min(torch.finfo(reference_solution.dtype).eps)
         # A zero forcing scale exposes the model's fixed left-hand side. It is
         # computed once, then reused for every alternative right-hand side.
@@ -505,47 +658,65 @@ def evaluate_poisson_forcing_sensitivity(
         ).detach()
         reference_forcing = poisson_forcing(evaluation).detach()
 
-        reference_forcing_rmse = float(reference_forcing.square().mean().sqrt())
-        raw_metrics: list[tuple[float, float]] = []
-        for scale in scales:
-            exact = scale * reference_solution
+        raw_metrics: list[tuple[float, float, float, float]] = []
+        nominal_rhs = poisson_forcing(
+            evaluation,
+            forcing_scale=nominal_scale,
+            forcing_additive=nominal_additive,
+        ).detach()
+        for perturbation in perturbations:
+            scale, additive = _forcing_parameters(mode, perturbation)
+            exact = scale * reference_solution + additive * additive_solution
             nominal_normalized_l2 = (
                 torch.linalg.vector_norm(prediction - exact)
                 / nominal_solution_norm
             )
-            residual_rmse = (
-                operator_prediction - scale * reference_forcing
-            ).square().mean().sqrt()
-            raw_metrics.append((float(nominal_normalized_l2), float(residual_rmse)))
+            rhs = scale * reference_forcing + additive
+            residual_rmse = (operator_prediction - rhs).square().mean().sqrt()
+            rhs_rmse = rhs.square().mean().sqrt()
+            rhs_change_rmse = (rhs - nominal_rhs).square().mean().sqrt()
+            raw_metrics.append(
+                (
+                    float(nominal_normalized_l2),
+                    float(residual_rmse),
+                    float(rhs_rmse),
+                    float(rhs_change_rmse),
+                )
+            )
 
-        nominal_normalized_l2, nominal_residual_rmse = raw_metrics[
+        nominal_normalized_l2, nominal_residual_rmse, _, _ = raw_metrics[
             nominal_indices[0]
         ]
-        evaluations = tuple(
-            PoissonForcingEvaluation(
-                forcing_scale=scale,
-                rhs_sine_coefficient=scale * 2.0 * math.pi**2,
-                rhs_rmse=abs(scale) * reference_forcing_rmse,
-                rhs_change_rmse_from_nominal=(
-                    abs(scale - nominal_scale) * reference_forcing_rmse
-                ),
-                nominal_normalized_l2_error=solution_error,
-                pde_residual_rmse=residual_rmse,
-                nominal_normalized_l2_error_change_from_nominal=(
-                    solution_error - nominal_normalized_l2
-                ),
-                pde_residual_rmse_change_from_nominal=(
-                    residual_rmse - nominal_residual_rmse
-                ),
+        evaluation_values = []
+        for perturbation, raw_metric in zip(perturbations, raw_metrics):
+            solution_error, residual_rmse, rhs_rmse, rhs_change_rmse = raw_metric
+            scale, additive = _forcing_parameters(mode, perturbation)
+            evaluation_values.append(
+                PoissonForcingEvaluation(
+                    forcing_mode=mode,
+                    forcing_perturbation=perturbation,
+                    forcing_scale=scale,
+                    rhs_sine_coefficient=scale * 2.0 * math.pi**2,
+                    rhs_constant=additive,
+                    rhs_rmse=rhs_rmse,
+                    rhs_change_rmse_from_nominal=rhs_change_rmse,
+                    nominal_normalized_l2_error=solution_error,
+                    pde_residual_rmse=residual_rmse,
+                    nominal_normalized_l2_error_change_from_nominal=(
+                        solution_error - nominal_normalized_l2
+                    ),
+                    pde_residual_rmse_change_from_nominal=(
+                        residual_rmse - nominal_residual_rmse
+                    ),
+                )
             )
-            for scale, (solution_error, residual_rmse) in zip(scales, raw_metrics)
-        )
+        evaluations = tuple(evaluation_values)
         perturbed = [
             evaluation
             for evaluation in evaluations
             if not math.isclose(
-                evaluation.forcing_scale,
-                nominal_scale,
+                evaluation.forcing_perturbation,
+                nominal_perturbation,
                 rel_tol=1e-12,
                 abs_tol=1e-12,
             )
@@ -561,7 +732,7 @@ def evaluate_poisson_forcing_sensitivity(
             )
             return max(
                 abs(getattr(value, attribute) - nominal_value)
-                / abs(value.forcing_scale - nominal_scale)
+                / abs(value.forcing_perturbation - nominal_perturbation)
                 for value in perturbed
             )
 
@@ -569,6 +740,11 @@ def evaluate_poisson_forcing_sensitivity(
         residual_values = [value[1] for value in raw_metrics]
         return PoissonForcingSensitivity(
             nominal_forcing_scale=nominal_scale,
+            forcing_mode=mode,
+            nominal_forcing_perturbation=nominal_perturbation,
+            additive_solution_terms=(
+                int(additive_solution_terms) if mode == "additive" else None
+            ),
             evaluations=evaluations,
             mean_nominal_normalized_l2_error=(
                 sum(solution_error_values) / len(solution_error_values)
@@ -599,7 +775,10 @@ def evaluate_poisson_laplace_sensitivity(
     curvature_probes: int = 16,
     confidence_level: float = 0.95,
     seed: int = 2718,
-    nominal_forcing_scale: float = 1.0,
+    nominal_forcing_scale: float | None = None,
+    forcing_mode: str = "scaled",
+    nominal_forcing_perturbation: float | None = None,
+    additive_solution_terms: int = 50,
 ) -> PoissonLaplaceSensitivity:
     """Propagate a local diagonal-GGN Laplace posterior to RHS metrics.
 
@@ -612,13 +791,35 @@ def evaluate_poisson_laplace_sensitivity(
     themselves been calibrated.
     """
 
-    scales = tuple(_forcing_scale(value) for value in forcing_scales)
-    nominal_scale = _forcing_scale(nominal_forcing_scale)
-    if not scales:
+    mode = _forcing_mode(forcing_mode)
+    perturbations = tuple(
+        _forcing_perturbation(mode, value) for value in forcing_scales
+    )
+    if nominal_forcing_scale is not None and nominal_forcing_perturbation is not None:
+        raise ValueError(
+            "Set only one of nominal_forcing_scale and "
+            "nominal_forcing_perturbation"
+        )
+    configured_nominal = (
+        nominal_forcing_perturbation
+        if nominal_forcing_perturbation is not None
+        else nominal_forcing_scale
+    )
+    nominal_perturbation = _forcing_perturbation(
+        mode,
+        (1.0 if mode == "scaled" else 0.0)
+        if configured_nominal is None
+        else configured_nominal
+    )
+    nominal_scale, nominal_additive = _forcing_parameters(
+        mode,
+        nominal_perturbation,
+    )
+    if not perturbations:
         raise ValueError("forcing_scales must contain at least one value")
-    if len(set(scales)) != len(scales):
+    if len(set(perturbations)) != len(perturbations):
         raise ValueError("forcing_scales must not contain duplicates")
-    if nominal_scale == 0.0:
+    if mode == "scaled" and nominal_perturbation == 0.0:
         raise ValueError(
             "nominal_forcing_scale must be non-zero because it normalizes "
             "the solution error"
@@ -740,9 +941,18 @@ def evaluate_poisson_laplace_sensitivity(
             forcing_scale=0.0,
         )
         reference_solution = exact_poisson_solution(evaluation)
+        additive_solution = (
+            constant_poisson_solution(
+                evaluation,
+                series_terms=additive_solution_terms,
+            )
+            if mode == "additive"
+            else torch.zeros_like(reference_solution)
+        )
         reference_forcing = poisson_forcing(evaluation)
         nominal_solution_rms = (
             nominal_scale * reference_solution
+            + nominal_additive * additive_solution
         ).square().mean().sqrt()
         confidence_z = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
         tiny = torch.finfo(dtype).tiny
@@ -773,16 +983,21 @@ def evaluate_poisson_laplace_sensitivity(
             )
 
         evaluations = []
-        for scale in scales:
-            exact = scale * reference_solution
+        for perturbation in perturbations:
+            scale, additive = _forcing_parameters(mode, perturbation)
+            exact = scale * reference_solution + additive * additive_solution
             difference_mse = (prediction - exact).square().mean()
             nominal_normalized_l2 = (
                 difference_mse.clamp_min(tiny).sqrt() / nominal_solution_rms
             )
-            pde_residual = operator_prediction - scale * reference_forcing
+            pde_residual = operator_prediction - (
+                scale * reference_forcing + additive
+            )
             residual_rmse = pde_residual.square().mean().clamp_min(tiny).sqrt()
             evaluations.append(
                 PoissonLaplaceForcingEvaluation(
+                    forcing_mode=mode,
+                    forcing_perturbation=perturbation,
                     forcing_scale=scale,
                     nominal_normalized_l2_error=metric_summary(
                         nominal_normalized_l2
@@ -809,6 +1024,11 @@ def evaluate_poisson_laplace_sensitivity(
                 posterior_standard_deviations.max()
             ),
             evaluations=tuple(evaluations),
+            forcing_mode=mode,
+            nominal_forcing_perturbation=nominal_perturbation,
+            additive_solution_terms=(
+                int(additive_solution_terms) if mode == "additive" else None
+            ),
         )
     finally:
         model.train(was_training)

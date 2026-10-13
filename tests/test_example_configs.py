@@ -60,3 +60,35 @@ def test_every_example_obeys_the_reproducibility_config_contract():
     finally:
         sys.path.remove(str(example_dir))
 
+
+def test_poisson_config_derives_every_rng_seed_from_one_base_seed():
+    path = Path(__file__).parents[1] / "examples" / "poisson_pinn.py"
+    namespace = runpy.run_path(str(path))
+    first = namespace["build_config"](100)
+    second = namespace["build_config"](110)
+
+    def seeds(config):
+        return (
+            config["model"]["parameter_init"]["rescaling"]["seed"],
+            config["model"]["parameter_init"]["seed"],
+            config["data"]["seed"],
+            config["pinn"]["evaluation"]["sharpness_seed"],
+            config["pinn"]["evaluation"]["laplace"]["seed"],
+            config["training"]["perturbation"]["seed"],
+            config["training"]["seed"],
+            config["training"]["batch_seed"],
+        )
+
+    assert seeds(first) == tuple(range(101, 109))
+    assert seeds(second) == tuple(value + 10 for value in seeds(first))
+
+
+def test_poisson_multi_seed_runner_builds_requested_sequence():
+    example_dir = Path(__file__).parents[1] / "examples"
+    sys.path.insert(0, str(example_dir))
+    try:
+        namespace = runpy.run_path(str(example_dir / "run_poisson_pinn_seeds.py"))
+    finally:
+        sys.path.remove(str(example_dir))
+
+    assert namespace["seed_sequence"](4, 20, 3) == (20, 23, 26, 29)
