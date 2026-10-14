@@ -17,6 +17,7 @@ from ssam import (
     poisson_residual,
     plot_pinn_training_history,
     plot_poisson_forcing_sensitivity,
+    plot_poisson_forcing_sensitivity_average,
     plot_poisson_solutions,
     poisson_forcing,
     train,
@@ -179,6 +180,7 @@ def test_poisson_forcing_sensitivity_supports_additive_constant_family():
     assert increased.rhs_constant == 0.5
     assert increased.rhs_change_rmse_from_nominal == pytest.approx(0.5)
     assert increased.pde_residual_rmse == pytest.approx(0.5, abs=1e-8)
+    assert increased.boundary_condition_rmse == pytest.approx(0.0, abs=1e-8)
 
     additive_solution = constant_poisson_solution(
         points.evaluation,
@@ -239,6 +241,7 @@ def test_poisson_laplace_sensitivity_produces_local_metric_intervals():
         for metric in (
             evaluation.nominal_normalized_l2_error,
             evaluation.pde_residual_rmse,
+            evaluation.boundary_condition_rmse,
         ):
             assert math.isfinite(metric.central)
             assert math.isfinite(metric.standard_deviation)
@@ -293,11 +296,50 @@ def test_poisson_forcing_sensitivity_plot_shows_original_rhs_and_responses():
         laplace_sensitivities={"exact": laplace},
     )
     titled_axes = {axis.get_title(): axis for axis in figure.axes if axis.get_title()}
-    assert any("Original RHS" in title for title in titled_axes)
+    assert "Boundary-condition mismatch" in titled_axes
+    assert len(titled_axes["Boundary-condition mismatch"].lines) == 2
     assert len(titled_axes["Solution mismatch"].lines) == 2
     assert len(titled_axes["PDE residual mismatch"].lines) == 2
+    assert titled_axes["Boundary-condition mismatch"].collections
     assert titled_axes["Solution mismatch"].collections
     assert titled_axes["PDE residual mismatch"].collections
+
+
+def test_poisson_forcing_sensitivity_average_plots_cross_run_means():
+    config = _config("sgd")
+    points = build_poisson_points(config)
+    first = evaluate_poisson_forcing_sensitivity(
+        TrainableExactSolution(),
+        points,
+        [0.5, 1.0, 1.5],
+    )
+    second_model = TrainableExactSolution()
+    with torch.no_grad():
+        second_model.scale.fill_(0.8)
+    second = evaluate_poisson_forcing_sensitivity(
+        second_model,
+        points,
+        [0.5, 1.0, 1.5],
+    )
+
+    figure = plot_poisson_forcing_sensitivity_average(
+        {"exact": [first, second]}
+    )
+
+    assert "2 independent runs" in figure._suptitle.get_text()
+    boundary_axis, solution_axis, residual_axis = figure.axes
+    assert boundary_axis.get_title() == "Boundary-condition mismatch"
+    expected_solution_mean = [
+        (left.nominal_normalized_l2_error + right.nominal_normalized_l2_error)
+        / 2.0
+        for left, right in zip(first.evaluations, second.evaluations)
+    ]
+    assert list(solution_axis.lines[0].get_ydata()) == pytest.approx(
+        expected_solution_mean
+    )
+    assert boundary_axis.collections
+    assert solution_axis.collections
+    assert residual_axis.collections
 
 
 def test_poisson_forcing_sensitivity_plot_labels_additive_epsilon():

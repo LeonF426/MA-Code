@@ -51,6 +51,7 @@ class PoissonForcingEvaluation:
     rhs_change_rmse_from_nominal: float
     nominal_normalized_l2_error: float
     pde_residual_rmse: float
+    boundary_condition_rmse: float
     nominal_normalized_l2_error_change_from_nominal: float
     pde_residual_rmse_change_from_nominal: float
     forcing_mode: str = "scaled"
@@ -92,6 +93,7 @@ class PoissonLaplaceForcingEvaluation:
     forcing_scale: float
     nominal_normalized_l2_error: LaplaceMetric
     pde_residual_rmse: LaplaceMetric
+    boundary_condition_rmse: LaplaceMetric
     forcing_mode: str = "scaled"
     forcing_perturbation: float = 1.0
 
@@ -622,12 +624,16 @@ def evaluate_poisson_forcing_sensitivity(
     if parameter is None:
         raise ValueError("The model has no trainable parameters")
     evaluation = points.evaluation.to(device=parameter.device, dtype=parameter.dtype)
+    boundary = points.boundary.to(device=parameter.device, dtype=parameter.dtype)
 
     was_training = model.training
     model.eval()
     try:
         with torch.no_grad():
             prediction = _scalar_prediction(model, evaluation)
+            boundary_condition_rmse = float(
+                _scalar_prediction(model, boundary).square().mean().sqrt()
+            )
             reference_solution = exact_poisson_solution(evaluation)
             additive_solution = (
                 constant_poisson_solution(
@@ -702,6 +708,7 @@ def evaluate_poisson_forcing_sensitivity(
                     rhs_change_rmse_from_nominal=rhs_change_rmse,
                     nominal_normalized_l2_error=solution_error,
                     pde_residual_rmse=residual_rmse,
+                    boundary_condition_rmse=boundary_condition_rmse,
                     nominal_normalized_l2_error_change_from_nominal=(
                         solution_error - nominal_normalized_l2
                     ),
@@ -982,6 +989,11 @@ def evaluate_poisson_laplace_sensitivity(
                 confidence_high=central + radius,
             )
 
+        evaluation_boundary_prediction = _scalar_prediction(model, boundary)
+        boundary_condition_rmse = metric_summary(
+            evaluation_boundary_prediction.square().mean().clamp_min(tiny).sqrt()
+        )
+
         evaluations = []
         for perturbation in perturbations:
             scale, additive = _forcing_parameters(mode, perturbation)
@@ -1003,6 +1015,7 @@ def evaluate_poisson_laplace_sensitivity(
                         nominal_normalized_l2
                     ),
                     pde_residual_rmse=metric_summary(residual_rmse),
+                    boundary_condition_rmse=boundary_condition_rmse,
                 )
             )
 

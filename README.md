@@ -443,8 +443,11 @@ per algorithm, keeping either sweep much cheaper than training or repeated
 sharpness evaluation.
 
 The console labels the nominal equation as `ORIGINAL RHS`, and
-`forcing_sensitivity.png` combines its spatial field with SGD/S-SAM curves for
-solution mismatch and PDE-residual mismatch. The solution metric uses the fixed
+`forcing_sensitivity.png` compares SGD/S-SAM boundary-condition mismatch,
+solution mismatch, and PDE-residual mismatch. The boundary curve reports RMSE
+against the zero Dirichlet condition; because the frozen model and boundary
+condition do not change during an RHS sweep, it is expected to remain constant
+and makes that invariance explicit. The solution metric uses the fixed
 nominal exact-solution norm in its denominator,
 so perturbations on either side of the nominal PDE are compared consistently.
 The ordinary relative L2 error remains in the
@@ -497,7 +500,12 @@ python examples/run_poisson_pinn_seeds.py --runs 10 --start-seed 100
 
 `--seed-step` controls the increment between seeds. Every repetition receives a
 fresh config from `build_config(seed)` and writes to the normal non-overwriting
-Poisson artifact directory.
+Poisson artifact directory. Each trained model is evaluated under both the
+scaled and additive RHS families without retraining. After the final run, its
+`multi_seed_summary` directory contains separate scaled and additive figures.
+Their curves are means over all requested seeds and their shaded regions show
+one sample standard deviation; the plotted values are also saved to the summary
+`metrics.json`.
 
 Every PINN example can choose which loss components receive S-SAM's Gaussian
 average-sharpness regularization:

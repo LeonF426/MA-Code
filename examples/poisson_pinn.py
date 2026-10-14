@@ -184,17 +184,35 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
             "pinn.evaluation.forcing_uncertainty.mode must be "
             "'scaled' or 'additive'"
         )
-    active_forcing_config = forcing_config[forcing_mode]
-    if (
-        forcing_mode == "additive"
-        and float(active_forcing_config.get("g", 1.0)) != 1.0
-    ):
-        raise ValueError("The additive Poisson RHS currently requires g=1")
-    forcing_values = active_forcing_config["values"]
-    nominal_forcing_perturbation = float(active_forcing_config["nominal"])
-    additive_solution_terms = int(
-        active_forcing_config.get("solution_series_terms", 50)
+    configured_modes = forcing_config.get("modes", (forcing_mode,))
+    if isinstance(configured_modes, str):
+        configured_modes = (configured_modes,)
+    forcing_modes = tuple(
+        dict.fromkeys(str(mode).lower() for mode in configured_modes)
     )
+    if forcing_mode not in forcing_modes:
+        forcing_modes = (forcing_mode, *forcing_modes)
+    if not forcing_modes or any(
+        mode not in {"scaled", "additive"} for mode in forcing_modes
+    ):
+        raise ValueError(
+            "pinn.evaluation.forcing_uncertainty.modes must contain only "
+            "'scaled' and/or 'additive'"
+        )
+    forcing_settings = {}
+    for mode in forcing_modes:
+        mode_config = forcing_config[mode]
+        if mode == "additive" and float(mode_config.get("g", 1.0)) != 1.0:
+            raise ValueError("The additive Poisson RHS currently requires g=1")
+        forcing_settings[mode] = {
+            "values": mode_config["values"],
+            "nominal": float(mode_config["nominal"]),
+            "additive_solution_terms": int(
+                mode_config.get("solution_series_terms", 50)
+            ),
+        }
+    active_forcing_settings = forcing_settings[forcing_mode]
+    nominal_forcing_perturbation = active_forcing_settings["nominal"]
     algorithms = tuple(pinn_config.get("algorithms", ("sgd", "s_sam")))
     configs = {}
     for algorithm in algorithms:
@@ -301,8 +319,8 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
 
     results = {}
     metrics = {}
-    forcing_sensitivities = {}
-    laplace_sensitivities = {}
+    forcing_sensitivities_by_mode = {mode: {} for mode in forcing_modes}
+    laplace_sensitivities_by_mode = {mode: {} for mode in forcing_modes}
     laplace_config = evaluation_config.get("laplace", {})
     for algorithm, config in configs.items():
         model = models[algorithm]
@@ -318,34 +336,46 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
             antithetic=bool(evaluation_config.get("antithetic", True)),
             normalized=config["training"]["perturbation"]["normalized"],
         )
-        forcing_sensitivities[algorithm] = evaluate_poisson_forcing_sensitivity(
-            model,
-            points,
-            forcing_values,
-            forcing_mode=forcing_mode,
-            nominal_forcing_perturbation=nominal_forcing_perturbation,
-            additive_solution_terms=additive_solution_terms,
-        )
-        if bool(laplace_config.get("enabled", True)):
-            laplace_sensitivities[algorithm] = evaluate_poisson_laplace_sensitivity(
-                model,
-                points,
-                forcing_values,
-                pde_weight=float(config["pinn"]["pde_weight"]),
-                boundary_weight=float(config["pinn"]["boundary_weight"]),
-                prior_precision=float(laplace_config.get("prior_precision", 100.0)),
-                likelihood_precision=float(
-                    laplace_config.get("likelihood_precision", 1.0)
-                ),
-                curvature_probes=int(laplace_config.get("curvature_probes", 16)),
-                confidence_level=float(
-                    laplace_config.get("confidence_level", 0.95)
-                ),
-                seed=int(laplace_config.get("seed", 2718)),
-                forcing_mode=forcing_mode,
-                nominal_forcing_perturbation=nominal_forcing_perturbation,
-                additive_solution_terms=additive_solution_terms,
+        for mode, settings in forcing_settings.items():
+            forcing_sensitivities_by_mode[mode][algorithm] = (
+                evaluate_poisson_forcing_sensitivity(
+                    model,
+                    points,
+                    settings["values"],
+                    forcing_mode=mode,
+                    nominal_forcing_perturbation=settings["nominal"],
+                    additive_solution_terms=settings["additive_solution_terms"],
+                )
             )
+            if bool(laplace_config.get("enabled", True)):
+                laplace_sensitivities_by_mode[mode][algorithm] = (
+                    evaluate_poisson_laplace_sensitivity(
+                        model,
+                        points,
+                        settings["values"],
+                        pde_weight=float(config["pinn"]["pde_weight"]),
+                        boundary_weight=float(config["pinn"]["boundary_weight"]),
+                        prior_precision=float(
+                            laplace_config.get("prior_precision", 100.0)
+                        ),
+                        likelihood_precision=float(
+                            laplace_config.get("likelihood_precision", 1.0)
+                        ),
+                        curvature_probes=int(
+                            laplace_config.get("curvature_probes", 16)
+                        ),
+                        confidence_level=float(
+                            laplace_config.get("confidence_level", 0.95)
+                        ),
+                        seed=int(laplace_config.get("seed", 2718)),
+                        forcing_mode=mode,
+                        nominal_forcing_perturbation=settings["nominal"],
+                        additive_solution_terms=settings["additive_solution_terms"],
+                    )
+                )
+
+    forcing_sensitivities = forcing_sensitivities_by_mode[forcing_mode]
+    laplace_sensitivities = laplace_sensitivities_by_mode[forcing_mode]
 
     original_rhs = {
         "forcing_scale": 1.0,
@@ -395,7 +425,8 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
                 f"RHS change RMSE={evaluation.rhs_change_rmse_from_nominal:.4e} | "
                 "nominal-normalized L2="
                 f"{evaluation.nominal_normalized_l2_error:.4e} | "
-                f"PDE RMSE={evaluation.pde_residual_rmse:.4e}"
+                f"PDE RMSE={evaluation.pde_residual_rmse:.4e} | "
+                f"boundary RMSE={evaluation.boundary_condition_rmse:.4e}"
             )
         print(
             f"{algorithm:>5} | RHS sensitivity | "
@@ -446,12 +477,18 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
         points,
         output_dir / "solutions.png",
     )
-    plot_poisson_forcing_sensitivity(
-        forcing_sensitivities,
-        points,
-        output_dir / "forcing_sensitivity.png",
-        laplace_sensitivities=laplace_sensitivities,
-    )
+    for mode in forcing_modes:
+        sensitivity_filename = (
+            "forcing_sensitivity.png"
+            if len(forcing_modes) == 1
+            else f"forcing_sensitivity_{mode}.png"
+        )
+        plot_poisson_forcing_sensitivity(
+            forcing_sensitivities_by_mode[mode],
+            points,
+            output_dir / sensitivity_filename,
+            laplace_sensitivities=laplace_sensitivities_by_mode[mode],
+        )
     history_plot = configuration["visualization"]["training_history"]
     plot_pinn_training_history(
         results,
@@ -467,7 +504,8 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
                 "uncertainty_interpretation": {
                     "forcing_sensitivity": (
                         "Deterministic frozen-model stress test under a hand-selected "
-                        f"{forcing_mode} RHS family; not a probability model."
+                        f"{', '.join(forcing_modes)} RHS family/families; not a "
+                        "probability model."
                     ),
                     "laplace_sensitivity": (
                         "Local diagonal-GGN Gaussian parameter approximation with "
@@ -485,11 +523,25 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
                         "forcing_sensitivity": asdict(
                             forcing_sensitivities[name]
                         ),
+                        "forcing_sensitivities": {
+                            mode: asdict(
+                                forcing_sensitivities_by_mode[mode][name]
+                            )
+                            for mode in forcing_modes
+                        },
                         "laplace_sensitivity": (
                             asdict(laplace_sensitivities[name])
                             if name in laplace_sensitivities
                             else None
                         ),
+                        "laplace_sensitivities": {
+                            mode: (
+                                asdict(laplace_sensitivities_by_mode[mode][name])
+                                if name in laplace_sensitivities_by_mode[mode]
+                                else None
+                            )
+                            for mode in forcing_modes
+                        },
                     }
                     for name, value in metrics.items()
                 },

@@ -86,6 +86,7 @@ from .linear_pinn import (
 from .visualization import (
     plot_1d_pinn_solutions,
     plot_poisson_forcing_sensitivity,
+    plot_poisson_forcing_sensitivity_average,
     plot_pinn_training_history,
     plot_poisson_solutions,
     plot_space_time_pinn_solutions,
@@ -151,6 +152,7 @@ __all__ = [
     "plot_1d_pinn_solutions",
     "plot_pinn_training_history",
     "plot_poisson_forcing_sensitivity",
+    "plot_poisson_forcing_sensitivity_average",
     "plot_poisson_solutions",
     "plot_space_time_pinn_solutions",
     "advection_features",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -661,9 +661,7 @@ def plot_poisson_forcing_sensitivity(
     *,
     laplace_sensitivities: Mapping[str, object] | None = None,
 ):
-    """Plot the original RHS, fixed-model responses, and optional Laplace bands."""
-
-    from .pinn import poisson_forcing
+    """Plot boundary, solution, and PDE sensitivity with optional Laplace bands."""
 
     if not sensitivities:
         raise ValueError("At least one forcing-sensitivity result is required")
@@ -684,25 +682,7 @@ def plot_poisson_forcing_sensitivity(
         fontsize=14,
     )
 
-    resolution = int(points.evaluation_resolution)
-    original_rhs = poisson_forcing(
-        points.evaluation,
-        forcing_scale=1.0,
-    ).detach().cpu()
-    image = axes[0].imshow(
-        original_rhs.reshape(resolution, resolution).T.numpy(),
-        origin="lower",
-        extent=(0.0, 1.0, 0.0, 1.0),
-        aspect="equal",
-        cmap="viridis",
-    )
-    axes[0].set(
-        xlabel="x",
-        ylabel="y",
-        title=r"Original RHS  $f=2\pi^2\sin(\pi x)\sin(\pi y)$",
-    )
-    fig.colorbar(image, ax=axes[0], shrink=0.8, label="f(x, y)")
-
+    boundary_series = []
     solution_error_series = []
     residual_series = []
     for label, sensitivity in sensitivities.items():
@@ -738,6 +718,17 @@ def plot_poisson_forcing_sensitivity(
             [evaluation.pde_residual_rmse for evaluation in evaluations],
             dtype=float,
         )
+        boundary = np.asarray(
+            [evaluation.boundary_condition_rmse for evaluation in evaluations],
+            dtype=float,
+        )
+        boundary_line = axes[0].plot(
+            perturbations,
+            boundary,
+            marker="o",
+            linewidth=2,
+            label=label,
+        )[0]
         solution_line = axes[1].plot(
             perturbations,
             solution_error,
@@ -752,6 +743,7 @@ def plot_poisson_forcing_sensitivity(
             linewidth=2,
             label=label,
         )[0]
+        boundary_series.append(boundary)
         solution_error_series.append(solution_error)
         residual_series.append(residual)
 
@@ -808,7 +800,30 @@ def plot_poisson_forcing_sensitivity(
                 ],
                 dtype=float,
             )
+            boundary_low = np.asarray(
+                [
+                    evaluation.boundary_condition_rmse.confidence_low
+                    for evaluation in laplace_evaluations
+                ],
+                dtype=float,
+            )
+            boundary_high = np.asarray(
+                [
+                    evaluation.boundary_condition_rmse.confidence_high
+                    for evaluation in laplace_evaluations
+                ],
+                dtype=float,
+            )
             confidence_percent = 100.0 * laplace.confidence_level
+            axes[0].fill_between(
+                laplace_perturbations,
+                boundary_low,
+                boundary_high,
+                color=boundary_line.get_color(),
+                alpha=0.18,
+                linewidth=0.0,
+                label=f"{label} Laplace {confidence_percent:g}%",
+            )
             axes[1].fill_between(
                 laplace_perturbations,
                 solution_low,
@@ -827,6 +842,7 @@ def plot_poisson_forcing_sensitivity(
                 linewidth=0.0,
                 label=f"{label} Laplace {confidence_percent:g}%",
             )
+            boundary_series.extend((boundary_low, boundary_high))
             solution_error_series.extend((solution_low, solution_high))
             residual_series.extend((residual_low, residual_high))
 
@@ -836,7 +852,7 @@ def plot_poisson_forcing_sensitivity(
         "nominal_forcing_perturbation",
         first_sensitivity.nominal_forcing_scale,
     )
-    for axis in axes[1:]:
+    for axis in axes:
         axis.axvline(
             nominal_perturbation,
             color="black",
@@ -851,6 +867,8 @@ def plot_poisson_forcing_sensitivity(
         )
         axis.grid(alpha=0.25)
         axis.legend(frameon=False)
+    axes[0].set_title("Boundary-condition mismatch")
+    axes[0].set_ylabel("Boundary-condition RMSE")
     axes[1].set_title("Solution mismatch")
     axes[1].set_ylabel("Nominal-normalized L2 solution error")
     axes[2].set_title("PDE residual mismatch")
@@ -858,8 +876,169 @@ def plot_poisson_forcing_sensitivity(
     # Keep zero-clipped lower credible bounds readable. A logarithmic scale is
     # still selected automatically when every value is positive and spans more
     # than two orders of magnitude.
+    _set_readable_y_scale(axes[0], boundary_series)
     _set_readable_y_scale(axes[1], solution_error_series)
     _set_readable_y_scale(axes[2], residual_series)
+
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    return _finish(fig, path, show)
+
+
+def plot_poisson_forcing_sensitivity_average(
+    sensitivities: Mapping[str, Sequence[object]],
+    path: str | Path | None = None,
+    show: bool = False,
+):
+    """Plot cross-run mean sensitivity and one-standard-deviation bands.
+
+    Each mapping value contains the forcing-sensitivity results for one
+    algorithm across independent runs. Results may be dataclass instances or
+    their JSON dictionary representation.
+    """
+
+    def value(record, name):
+        if isinstance(record, Mapping):
+            return record[name]
+        return getattr(record, name)
+
+    def evaluations(result):
+        return sorted(
+            value(result, "evaluations"),
+            key=lambda evaluation: float(
+                value(evaluation, "forcing_perturbation")
+            ),
+        )
+
+    if not sensitivities:
+        raise ValueError("At least one algorithm's sensitivity runs are required")
+
+    all_runs = [run for runs in sensitivities.values() for run in runs]
+    if not all_runs:
+        raise ValueError("At least one forcing-sensitivity run is required")
+    modes = {str(value(run, "forcing_mode")) for run in all_runs}
+    if len(modes) != 1:
+        raise ValueError("All forcing sensitivities in one plot must use the same mode")
+    forcing_mode = modes.pop()
+    if forcing_mode not in {"scaled", "additive"}:
+        raise ValueError("forcing_mode must be 'scaled' or 'additive'")
+
+    nominal_values = {
+        float(value(run, "nominal_forcing_perturbation")) for run in all_runs
+    }
+    if len(nominal_values) != 1:
+        raise ValueError("All forcing sensitivities must use the same nominal value")
+    nominal_perturbation = nominal_values.pop()
+
+    plt = _pyplot(show)
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.2))
+    family_label = "scaling" if forcing_mode == "scaled" else "additive shifts"
+    run_counts = {len(runs) for runs in sensitivities.values()}
+    count_label = (
+        f"{run_counts.pop()} independent runs"
+        if len(run_counts) == 1
+        else "independent runs"
+    )
+    fig.suptitle(
+        f"Mean frozen-model sensitivity to Poisson RHS {family_label} "
+        f"across {count_label}",
+        fontsize=14,
+    )
+
+    metric_specs = (
+        ("boundary_condition_rmse", "Boundary-condition mismatch", "Boundary-condition RMSE"),
+        (
+            "nominal_normalized_l2_error",
+            "Solution mismatch",
+            "Nominal-normalized L2 solution error",
+        ),
+        ("pde_residual_rmse", "PDE residual mismatch", "PDE residual RMSE"),
+    )
+    panel_series = [[] for _ in axes]
+    reference_grid = None
+    for label, runs in sensitivities.items():
+        if not runs:
+            raise ValueError(f"Algorithm {label!r} has no sensitivity runs")
+        metric_matrices = [[] for _ in axes]
+        for run in runs:
+            run_evaluations = evaluations(run)
+            if not run_evaluations:
+                raise ValueError("A forcing-sensitivity result has no evaluations")
+            perturbations = np.asarray(
+                [
+                    float(value(evaluation, "forcing_perturbation"))
+                    for evaluation in run_evaluations
+                ],
+                dtype=float,
+            )
+            if reference_grid is None:
+                reference_grid = perturbations
+            elif not np.allclose(
+                perturbations,
+                reference_grid,
+                rtol=1e-12,
+                atol=1e-12,
+            ):
+                raise ValueError(
+                    "All forcing sensitivities must use the same perturbation grid"
+                )
+            for panel_index, (metric_name, _, _) in enumerate(metric_specs):
+                metric_matrices[panel_index].append(
+                    [
+                        float(value(evaluation, metric_name))
+                        for evaluation in run_evaluations
+                    ]
+                )
+
+        for panel_index, matrix_values in enumerate(metric_matrices):
+            matrix = np.asarray(matrix_values, dtype=float)
+            mean = matrix.mean(axis=0)
+            deviation = (
+                matrix.std(axis=0, ddof=1)
+                if matrix.shape[0] > 1
+                else np.zeros_like(mean)
+            )
+            line = axes[panel_index].plot(
+                reference_grid,
+                mean,
+                marker="o",
+                linewidth=2,
+                label=f"{label} mean",
+            )[0]
+            if matrix.shape[0] > 1:
+                low = np.maximum(0.0, mean - deviation)
+                high = mean + deviation
+                axes[panel_index].fill_between(
+                    reference_grid,
+                    low,
+                    high,
+                    color=line.get_color(),
+                    alpha=0.18,
+                    linewidth=0.0,
+                    label=f"{label} +/- 1 SD",
+                )
+                panel_series[panel_index].extend((low, high))
+            panel_series[panel_index].append(mean)
+
+    for panel_index, (axis, (_, title, ylabel)) in enumerate(
+        zip(axes, metric_specs)
+    ):
+        axis.axvline(
+            nominal_perturbation,
+            color="black",
+            linestyle=":",
+            linewidth=1.5,
+            label="original RHS",
+        )
+        axis.set_xlabel(
+            "RHS scale a in -Delta u = a f"
+            if forcing_mode == "scaled"
+            else "Additive epsilon in -Delta u = f + epsilon"
+        )
+        axis.set_title(title)
+        axis.set_ylabel(ylabel)
+        axis.grid(alpha=0.25)
+        axis.legend(frameon=False)
+        _set_readable_y_scale(axis, panel_series[panel_index])
 
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     return _finish(fig, path, show)
