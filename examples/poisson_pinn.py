@@ -31,7 +31,7 @@ from ssam import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SEED = 22_412_345_789
+SEED = 22_478_666
 
 
 def build_config(seed: int = SEED) -> dict[str, Any]:
@@ -88,7 +88,7 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
                 # g=1. Both value grids remain in the config, so switching only
                 # requires changing this one mode.
                 "forcing_uncertainty": {
-                    "mode": "additive",
+                    "mode": "scaled",
                     "scaled": {
                         "values": [
                             0.95,
