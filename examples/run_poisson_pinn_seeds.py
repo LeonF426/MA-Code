@@ -1,5 +1,5 @@
 """Run the Poisson PINN experiment repeatedly with different base seeds."""
-
+#  python .\examples\run_poisson_pinn_seeds.py --runs <N> --start-seed <SEED>
 from __future__ import annotations
 
 import argparse

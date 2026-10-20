@@ -141,16 +141,16 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
                 "name": "tamed",
                 "inserted_lr": {"name": "constant", "value": 2e-3},
             },
-            "sharpness_scale": {
-                "name": "inverse_time",
-                "initial": 1,
-                "power": 0.5,
-                "floor": 0.0,
-            },
             # "sharpness_scale": {
-            #     "name": "constant",
-            #     "value": 0.05
+            #     "name": "inverse_time",
+            #     "initial": 1,
+            #     "power": 0.5,
+            #     "floor": 0.0,
             # },
+            "sharpness_scale": {
+                "name": "constant",
+                "value": 0.1
+            },
             "perturbation": {
                 "distribution": "gaussian",
                 "samples": 20,
