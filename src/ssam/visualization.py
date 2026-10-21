@@ -587,7 +587,7 @@ def plot_poisson_solutions(
     path: str | Path | None = None,
     show: bool = False,
 ):
-    """Plot fields with one color scale shared by all solutions and predictions."""
+    """Plot fields with shared color scales for solutions and absolute errors."""
 
     from .pinn import exact_poisson_solution
 
@@ -600,6 +600,7 @@ def plot_poisson_solutions(
     evaluated_rows = []
     solution_vmin = float("inf")
     solution_vmax = float("-inf")
+    error_vmax = 0.0
     for label, model in models.items():
         parameter = next(model.parameters())
         coordinates = points.evaluation.to(
@@ -628,6 +629,7 @@ def plot_poisson_solutions(
             float(exact.max()),
             float(prediction.max()),
         )
+        error_vmax = max(error_vmax, float(error.max()))
         evaluated_rows.append((label, exact, prediction, error))
 
     for row, (label, exact, prediction, error) in enumerate(evaluated_rows):
@@ -644,8 +646,8 @@ def plot_poisson_solutions(
                 extent=(0.0, 1.0, 0.0, 1.0),
                 aspect="equal",
                 cmap="viridis" if is_solution else "magma",
-                vmin=solution_vmin if is_solution else None,
-                vmax=solution_vmax if is_solution else None,
+                vmin=solution_vmin if is_solution else 0.0,
+                vmax=solution_vmax if is_solution else error_vmax,
             )
             axis.set(xlabel="x", ylabel="y", title=title)
             fig.colorbar(image, ax=axis, shrink=0.8)
@@ -1052,7 +1054,7 @@ def plot_space_time_pinn_solutions(
     path: str | Path | None = None,
     show: bool = False,
 ):
-    """Plot fields with one color scale shared by all solutions and predictions."""
+    """Plot fields with shared color scales for solutions and absolute errors."""
 
     if not models:
         raise ValueError("At least one model is required")
@@ -1064,6 +1066,7 @@ def plot_space_time_pinn_solutions(
     evaluated_rows = []
     solution_vmin = float("inf")
     solution_vmax = float("-inf")
+    error_vmax = 0.0
     for label, model in models.items():
         parameter = next(model.parameters())
         coordinates = points.evaluation.to(
@@ -1092,6 +1095,7 @@ def plot_space_time_pinn_solutions(
             float(exact.max()),
             float(prediction.max()),
         )
+        error_vmax = max(error_vmax, float(error.max()))
         extent = (
             float(coordinates[:, 0].min()),
             float(coordinates[:, 0].max()),
@@ -1114,8 +1118,8 @@ def plot_space_time_pinn_solutions(
                 extent=extent,
                 aspect="auto",
                 cmap="viridis" if is_solution else "magma",
-                vmin=solution_vmin if is_solution else None,
-                vmax=solution_vmax if is_solution else None,
+                vmin=solution_vmin if is_solution else 0.0,
+                vmax=solution_vmax if is_solution else error_vmax,
             )
             axis.set(xlabel="x", ylabel="t", title=title)
             fig.colorbar(image, ax=axis, shrink=0.8)

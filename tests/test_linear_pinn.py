@@ -282,7 +282,7 @@ def test_interpolation_sharpness_supports_coordinate_derivatives():
     assert all(point.average_sharpness == pytest.approx(0.0) for point in result.points)
 
 
-def test_space_time_solution_and_prediction_panels_share_color_scale():
+def test_space_time_solution_and_error_panels_share_color_scales():
     config = _config(3, "sgd")
     points = build_advection_points(config)
     first = build_model(config)
@@ -302,6 +302,16 @@ def test_space_time_solution_and_prediction_panels_share_color_scale():
         if axis.images and "error" not in axis.get_title().lower()
     ]
     color_limits = [axis.images[0].get_clim() for axis in solution_axes]
+    error_images = [
+        axis.images[0]
+        for axis in figure.axes
+        if axis.images and "error" in axis.get_title().lower()
+    ]
+    error_color_limits = [image.get_clim() for image in error_images]
 
     assert len(color_limits) == 4
     assert all(limits == color_limits[0] for limits in color_limits[1:])
+    assert len(error_color_limits) == 2
+    assert all(limits == error_color_limits[0] for limits in error_color_limits[1:])
+    assert error_color_limits[0][0] == 0.0
+    assert all(image.get_cmap().name == "magma" for image in error_images)
