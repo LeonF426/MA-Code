@@ -53,14 +53,14 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
             "bias": True,
             "parameter_init": {
                 "type": "xavier_uniform",
-                "rescaling": {
-                    # Tanh is not positively homogeneous, so this intentionally
-                    # changes the initial function while altering parameter scales.
-                    "preserve_function": False,
-                    "mode": "layerwise",
-                    "log_scale_std": 0.04,
-                    "seed": seed + 1,
-                },
+                # "rescaling": {
+                #     # Tanh is not positively homogeneous, so this intentionally
+                #     # changes the initial function while altering parameter scales.
+                #     "preserve_function": False,
+                #     "mode": "layerwise",
+                #     "log_scale_std": 0.04,
+                #     "seed": seed + 1,
+                # },
                 "seed": seed + 2,
             },
         },
@@ -135,22 +135,22 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
             },
         },
         "training": {
-            "steps": 1200,
-            "batch_size": 128,
+            "steps": 2000,
+            "batch_size": 100,
             "learning_rate": {
                 "name": "tamed",
                 "inserted_lr": {"name": "constant", "value": 2e-3},
             },
-            # "sharpness_scale": {
-            #     "name": "inverse_time",
-            #     "initial": 1,
-            #     "power": 0.5,
-            #     "floor": 0.0,
-            # },
             "sharpness_scale": {
-                "name": "constant",
-                "value": 0.1
+                "name": "inverse_time",
+                "initial": 1,
+                "power": 0.5,
+                "floor": 0.0,
             },
+            # "sharpness_scale": {
+            #     "name": "constant",
+            #     "value": 0.1
+            # },
             "perturbation": {
                 "distribution": "gaussian",
                 "samples": 20,
