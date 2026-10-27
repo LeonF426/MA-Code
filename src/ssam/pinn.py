@@ -77,6 +77,41 @@ class PoissonForcingSensitivity:
 
 
 @dataclass(frozen=True)
+class PoissonBoundaryEvaluation:
+    """Metrics for one scaled or additive Dirichlet-boundary perturbation."""
+
+    boundary_mode: str
+    boundary_perturbation: float
+    boundary_scale: float
+    boundary_additive_scale: float
+    boundary_value_rmse: float
+    boundary_change_rmse_from_nominal: float
+    nominal_normalized_l2_error: float
+    pde_residual_rmse: float
+    boundary_condition_rmse: float
+    nominal_normalized_l2_error_change_from_nominal: float
+    boundary_condition_rmse_change_from_nominal: float
+
+
+@dataclass(frozen=True)
+class PoissonBoundarySensitivity:
+    """Sensitivity of a frozen model to a family of Dirichlet data."""
+
+    boundary_mode: str
+    nominal_boundary_perturbation: float
+    boundary_condition: dict[str, float | str]
+    additive_boundary_condition: dict[str, float | str] | None
+    evaluations: tuple[PoissonBoundaryEvaluation, ...]
+    mean_nominal_normalized_l2_error: float
+    worst_nominal_normalized_l2_error: float
+    mean_boundary_condition_rmse: float
+    worst_boundary_condition_rmse: float
+    pde_residual_rmse: float
+    max_nominal_normalized_l2_error_change_per_unit_perturbation: float
+    max_boundary_condition_rmse_change_per_unit_perturbation: float
+
+
+@dataclass(frozen=True)
 class LaplaceMetric:
     """First-order scalar metric uncertainty under a local Laplace posterior."""
 
@@ -120,11 +155,111 @@ class PoissonLaplaceSensitivity:
     additive_solution_terms: int | None = None
 
 
-def exact_poisson_solution(coordinates: torch.Tensor, a: float = 1.0) -> torch.Tensor:
-    """Return ``sin(pi*x) sin(pi*y)`` at ``(x, y)`` coordinates."""
+_BOUNDARY_COEFFICIENTS = (
+    "constant",
+    "x",
+    "y",
+    "xy",
+    "x2_minus_y2",
+)
+_BOUNDARY_NAMES = {
+    "zero": (),
+    "constant": ("constant",),
+    "affine": ("constant", "x", "y"),
+    "bilinear": ("constant", "x", "y", "xy"),
+    "harmonic_polynomial": _BOUNDARY_COEFFICIENTS,
+}
 
-    return a * torch.sin(math.pi * coordinates[:, 0]) * torch.sin(
+
+def resolve_poisson_boundary_condition(
+    boundary_condition: str | Mapping[str, Any] | None = None,
+) -> dict[str, float | str]:
+    """Validate a named harmonic extension used as Dirichlet boundary data.
+
+    Supported choices are ``zero``, ``constant``, ``affine``, ``bilinear``,
+    and ``harmonic_polynomial``.  The latter uses the harmonic basis
+    ``1, x, y, x*y, x^2-y^2``.  Because every basis function has zero
+    Laplacian, adding the extension changes the boundary values and exact
+    solution without silently changing the configured Poisson right-hand side.
+    """
+
+    if boundary_condition is None:
+        options: dict[str, Any] = {"name": "zero"}
+    elif isinstance(boundary_condition, str):
+        options = {"name": boundary_condition}
+    elif isinstance(boundary_condition, Mapping):
+        options = dict(boundary_condition)
+    else:
+        raise TypeError("boundary_condition must be a string, mapping, or None")
+    name = str(options.pop("name", options.pop("type", "zero"))).strip().lower()
+    if name not in _BOUNDARY_NAMES:
+        raise ValueError(
+            "boundary_condition.name must be one of "
+            f"{sorted(_BOUNDARY_NAMES)}"
+        )
+    if name == "constant" and "value" in options:
+        if "constant" in options:
+            raise ValueError("Set only one of boundary value and constant")
+        options["constant"] = options.pop("value")
+    allowed = set(_BOUNDARY_NAMES[name])
+    unknown = set(options) - set(_BOUNDARY_COEFFICIENTS)
+    if unknown:
+        raise ValueError(
+            f"Unknown {name} boundary-condition keys: {sorted(unknown)}"
+        )
+    disallowed_nonzero = {
+        coefficient
+        for coefficient in set(options) - allowed
+        if float(options[coefficient]) != 0.0
+    }
+    if disallowed_nonzero:
+        raise ValueError(
+            f"Boundary choice {name!r} does not support non-zero coefficients: "
+            f"{sorted(disallowed_nonzero)}"
+        )
+    resolved: dict[str, float | str] = {"name": name}
+    for coefficient in _BOUNDARY_COEFFICIENTS:
+        value = float(options.get(coefficient, 0.0))
+        if not math.isfinite(value):
+            raise ValueError("Boundary-condition coefficients must be finite")
+        resolved[coefficient] = value
+    return resolved
+
+
+def poisson_boundary_values(
+    coordinates: torch.Tensor,
+    boundary_condition: str | Mapping[str, Any] | None = None,
+) -> torch.Tensor:
+    """Evaluate the harmonic extension defining the Dirichlet data ``g``."""
+
+    if coordinates.ndim != 2 or coordinates.shape[1] != 2:
+        raise ValueError("coordinates must have shape (N, 2)")
+    condition = resolve_poisson_boundary_condition(boundary_condition)
+    x = coordinates[:, 0]
+    y = coordinates[:, 1]
+    return (
+        float(condition["constant"]) * torch.ones_like(x)
+        + float(condition["x"]) * x
+        + float(condition["y"]) * y
+        + float(condition["xy"]) * x * y
+        + float(condition["x2_minus_y2"]) * (x.square() - y.square())
+    )
+
+
+def exact_poisson_solution(
+    coordinates: torch.Tensor,
+    a: float = 1.0,
+    *,
+    boundary_condition: str | Mapping[str, Any] | None = None,
+) -> torch.Tensor:
+    """Return the exact sine solution plus a configured harmonic extension."""
+
+    sine_solution = a * torch.sin(math.pi * coordinates[:, 0]) * torch.sin(
         math.pi * coordinates[:, 1]
+    )
+    return sine_solution + poisson_boundary_values(
+        coordinates,
+        boundary_condition,
     )
 
 
@@ -207,6 +342,7 @@ def _exact_solution_for_forcing(
     forcing_scale: float,
     forcing_additive: float,
     additive_solution_terms: int,
+    boundary_condition: str | Mapping[str, Any] | None = None,
 ) -> torch.Tensor:
     return (
         forcing_scale * exact_poisson_solution(coordinates)
@@ -215,6 +351,7 @@ def _exact_solution_for_forcing(
             coordinates,
             series_terms=additive_solution_terms,
         )
+        + poisson_boundary_values(coordinates, boundary_condition)
     )
 
 
@@ -290,6 +427,7 @@ def poisson_loss_components(
     boundary_weight: float = 1.0,
     forcing_scale: float = 1.0,
     forcing_additive: float = 0.0,
+    boundary_condition: str | Mapping[str, Any] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Return the complete weighted objective and its unweighted components."""
 
@@ -302,7 +440,11 @@ def poisson_loss_components(
     )
     pde_loss = residual.square().mean()
     boundary_prediction = _scalar_prediction(model, boundary_points)
-    boundary_loss = boundary_prediction.square().mean()
+    boundary_target = poisson_boundary_values(
+        boundary_points,
+        boundary_condition,
+    )
+    boundary_loss = (boundary_prediction - boundary_target).square().mean()
     return {
         "loss": pde_weight * pde_loss + boundary_weight * boundary_loss,
         "pde_loss": pde_loss,
@@ -382,6 +524,10 @@ def train_poisson_pinn(
     }
     batcher = PINNBatcher(point_groups, resolved)
     pde_weight, boundary_weight = _pinn_options(config)
+    boundary_condition = config.get("pinn", {}).get("boundary_condition")
+    # Resolve before the first training step so malformed configurations fail
+    # immediately rather than part-way through an expensive run.
+    resolve_poisson_boundary_condition(boundary_condition)
     sharpness_components = resolve_sharpness_components(config)
 
     dimension, depth = _inferred_policy_shape(model, config)
@@ -431,6 +577,7 @@ def train_poisson_pinn(
                     batches["boundary"],
                     pde_weight=pde_weight,
                     boundary_weight=boundary_weight,
+                    boundary_condition=boundary_condition,
                 ),
                 pde_weight=pde_weight,
                 boundary_weight=boundary_weight,
@@ -485,11 +632,13 @@ def evaluate_poisson_pinn(
     forcing_scale: float = 1.0,
     forcing_additive: float = 0.0,
     additive_solution_terms: int = 50,
+    boundary_condition: str | Mapping[str, Any] | None = None,
 ) -> PoissonMetrics:
     """Evaluate against ``-Delta u = forcing_scale*f + forcing_additive``.
 
     The constant-forcing response used by the additive term is evaluated with
-    :func:`constant_poisson_solution`. Model parameters are never changed.
+    :func:`constant_poisson_solution`. ``boundary_condition`` supplies an exact
+    harmonic Dirichlet extension. Model parameters are never changed.
     """
 
     forcing_scale = _forcing_scale(forcing_scale)
@@ -512,11 +661,15 @@ def evaluate_poisson_pinn(
                 forcing_scale=forcing_scale,
                 forcing_additive=forcing_additive,
                 additive_solution_terms=additive_solution_terms,
+                boundary_condition=boundary_condition,
             )
             relative_l2 = torch.linalg.vector_norm(prediction - exact) / torch.linalg.vector_norm(
                 exact
             ).clamp_min(torch.finfo(exact.dtype).eps)
-            boundary_rmse = _scalar_prediction(model, boundary).square().mean().sqrt()
+            boundary_rmse = (
+                _scalar_prediction(model, boundary)
+                - poisson_boundary_values(boundary, boundary_condition)
+            ).square().mean().sqrt()
         residual_rmse = poisson_residual(
             model,
             evaluation,
@@ -536,6 +689,7 @@ def evaluate_poisson_pinn(
                     boundary_weight=boundary_weight,
                     forcing_scale=forcing_scale,
                     forcing_additive=forcing_additive,
+                    boundary_condition=boundary_condition,
                 )["loss"]
 
             sharpness = evaluate_average_sharpness_closure(
@@ -567,16 +721,19 @@ def evaluate_poisson_forcing_sensitivity(
     forcing_mode: str = "scaled",
     nominal_forcing_perturbation: float | None = None,
     additive_solution_terms: int = 50,
+    boundary_condition: str | Mapping[str, Any] | None = None,
 ) -> PoissonForcingSensitivity:
     """Evaluate a fixed model under scaled ``a*f`` or additive ``f+eps`` RHSs.
 
     ``forcing_scales`` is retained as the argument name for API compatibility;
-    in additive mode its values are epsilon. The model prediction and its
-    Laplacian are evaluated only once. Sensitivities are worst absolute secant
-    slopes away from the configured nominal perturbation.
+    in additive mode its values are epsilon. A configured Dirichlet condition
+    remains fixed throughout the sweep. The model prediction and its Laplacian
+    are evaluated only once. Sensitivities are worst absolute secant slopes
+    away from the configured nominal perturbation.
     """
 
     mode = _forcing_mode(forcing_mode)
+    resolved_boundary = resolve_poisson_boundary_condition(boundary_condition)
     perturbations = tuple(
         _forcing_perturbation(mode, value) for value in forcing_scales
     )
@@ -632,9 +789,19 @@ def evaluate_poisson_forcing_sensitivity(
         with torch.no_grad():
             prediction = _scalar_prediction(model, evaluation)
             boundary_condition_rmse = float(
-                _scalar_prediction(model, boundary).square().mean().sqrt()
+                (
+                    _scalar_prediction(model, boundary)
+                    - poisson_boundary_values(boundary, resolved_boundary)
+                )
+                .square()
+                .mean()
+                .sqrt()
             )
             reference_solution = exact_poisson_solution(evaluation)
+            boundary_solution = poisson_boundary_values(
+                evaluation,
+                resolved_boundary,
+            )
             additive_solution = (
                 constant_poisson_solution(
                     evaluation,
@@ -650,6 +817,7 @@ def evaluate_poisson_forcing_sensitivity(
             nominal_solution = (
                 nominal_scale * reference_solution
                 + nominal_additive * additive_solution
+                + boundary_solution
             )
             nominal_solution_norm = torch.linalg.vector_norm(
                 nominal_solution
@@ -672,7 +840,11 @@ def evaluate_poisson_forcing_sensitivity(
         ).detach()
         for perturbation in perturbations:
             scale, additive = _forcing_parameters(mode, perturbation)
-            exact = scale * reference_solution + additive * additive_solution
+            exact = (
+                scale * reference_solution
+                + additive * additive_solution
+                + boundary_solution
+            )
             nominal_normalized_l2 = (
                 torch.linalg.vector_norm(prediction - exact)
                 / nominal_solution_norm
@@ -770,6 +942,241 @@ def evaluate_poisson_forcing_sensitivity(
         model.train(was_training)
 
 
+def evaluate_poisson_boundary_sensitivity(
+    model: nn.Module,
+    points: PoissonPointSets,
+    perturbation_values: list[float] | tuple[float, ...],
+    *,
+    boundary_condition: str | Mapping[str, Any] | None = None,
+    boundary_mode: str = "scaled",
+    nominal_boundary_perturbation: float | None = None,
+    additive_boundary_condition: str | Mapping[str, Any] | None = None,
+) -> PoissonBoundarySensitivity:
+    """Evaluate a frozen model under scaled or additive Dirichlet data.
+
+    In scaled mode, the family is ``g_a = a*g``.  In additive mode, it is
+    ``g_epsilon = g + epsilon*q``, where ``q`` is another configured harmonic
+    boundary condition (constant one by default).  The corresponding exact
+    solutions are available in closed form because both harmonic extensions
+    have zero Laplacian; the right-hand side remains unchanged.
+    """
+
+    mode = str(boundary_mode).strip().lower()
+    if mode not in {"scaled", "additive"}:
+        raise ValueError("boundary_mode must be 'scaled' or 'additive'")
+    perturbations = tuple(float(value) for value in perturbation_values)
+    if not perturbations:
+        raise ValueError("perturbation_values must contain at least one value")
+    if any(not math.isfinite(value) for value in perturbations):
+        raise ValueError("Boundary perturbations must be finite")
+    if len(set(perturbations)) != len(perturbations):
+        raise ValueError("perturbation_values must not contain duplicates")
+    nominal = float(
+        (1.0 if mode == "scaled" else 0.0)
+        if nominal_boundary_perturbation is None
+        else nominal_boundary_perturbation
+    )
+    if not math.isfinite(nominal):
+        raise ValueError("nominal_boundary_perturbation must be finite")
+    nominal_indices = [
+        index
+        for index, value in enumerate(perturbations)
+        if math.isclose(value, nominal, rel_tol=1e-12, abs_tol=1e-12)
+    ]
+    if not nominal_indices:
+        raise ValueError(
+            "perturbation_values must include nominal boundary perturbation"
+        )
+
+    resolved_boundary = resolve_poisson_boundary_condition(boundary_condition)
+    resolved_additive = None
+    if mode == "additive":
+        resolved_additive = resolve_poisson_boundary_condition(
+            {"name": "constant", "value": 1.0}
+            if additive_boundary_condition is None
+            else additive_boundary_condition
+        )
+
+    parameter = next(
+        (value for value in model.parameters() if value.requires_grad),
+        None,
+    )
+    if parameter is None:
+        raise ValueError("The model has no trainable parameters")
+    evaluation = points.evaluation.to(
+        device=parameter.device,
+        dtype=parameter.dtype,
+    )
+    boundary = points.boundary.to(
+        device=parameter.device,
+        dtype=parameter.dtype,
+    )
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            prediction = _scalar_prediction(model, evaluation)
+            boundary_prediction = _scalar_prediction(model, boundary)
+            sine_solution = exact_poisson_solution(evaluation)
+            base_extension = poisson_boundary_values(
+                evaluation,
+                resolved_boundary,
+            )
+            base_boundary = poisson_boundary_values(
+                boundary,
+                resolved_boundary,
+            )
+            additive_extension = (
+                poisson_boundary_values(evaluation, resolved_additive)
+                if resolved_additive is not None
+                else torch.zeros_like(base_extension)
+            )
+            additive_boundary = (
+                poisson_boundary_values(boundary, resolved_additive)
+                if resolved_additive is not None
+                else torch.zeros_like(base_boundary)
+            )
+
+            def boundary_parameters(value: float) -> tuple[float, float]:
+                return (value, 0.0) if mode == "scaled" else (1.0, value)
+
+            nominal_scale, nominal_additive = boundary_parameters(nominal)
+            nominal_exact = (
+                sine_solution
+                + nominal_scale * base_extension
+                + nominal_additive * additive_extension
+            )
+            nominal_boundary = (
+                nominal_scale * base_boundary
+                + nominal_additive * additive_boundary
+            )
+            nominal_solution_norm = torch.linalg.vector_norm(
+                nominal_exact
+            ).clamp_min(torch.finfo(nominal_exact.dtype).eps)
+
+            raw_metrics = []
+            for perturbation in perturbations:
+                scale, additive = boundary_parameters(perturbation)
+                exact = (
+                    sine_solution
+                    + scale * base_extension
+                    + additive * additive_extension
+                )
+                target = scale * base_boundary + additive * additive_boundary
+                raw_metrics.append(
+                    (
+                        float(
+                            torch.linalg.vector_norm(prediction - exact)
+                            / nominal_solution_norm
+                        ),
+                        float(
+                            (boundary_prediction - target)
+                            .square()
+                            .mean()
+                            .sqrt()
+                        ),
+                        float(target.square().mean().sqrt()),
+                        float(
+                            (target - nominal_boundary)
+                            .square()
+                            .mean()
+                            .sqrt()
+                        ),
+                    )
+                )
+
+        pde_residual_rmse = float(
+            poisson_residual(
+                model,
+                evaluation,
+                create_graph=False,
+            )
+            .detach()
+            .square()
+            .mean()
+            .sqrt()
+        )
+        nominal_solution_error, nominal_boundary_error, _, _ = raw_metrics[
+            nominal_indices[0]
+        ]
+        evaluations = []
+        for perturbation, raw in zip(perturbations, raw_metrics):
+            solution_error, boundary_error, value_rmse, change_rmse = raw
+            scale, additive = boundary_parameters(perturbation)
+            evaluations.append(
+                PoissonBoundaryEvaluation(
+                    boundary_mode=mode,
+                    boundary_perturbation=perturbation,
+                    boundary_scale=scale,
+                    boundary_additive_scale=additive,
+                    boundary_value_rmse=value_rmse,
+                    boundary_change_rmse_from_nominal=change_rmse,
+                    nominal_normalized_l2_error=solution_error,
+                    pde_residual_rmse=pde_residual_rmse,
+                    boundary_condition_rmse=boundary_error,
+                    nominal_normalized_l2_error_change_from_nominal=(
+                        solution_error - nominal_solution_error
+                    ),
+                    boundary_condition_rmse_change_from_nominal=(
+                        boundary_error - nominal_boundary_error
+                    ),
+                )
+            )
+        evaluation_tuple = tuple(evaluations)
+        perturbed = [
+            value
+            for value in evaluation_tuple
+            if not math.isclose(
+                value.boundary_perturbation,
+                nominal,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )
+        ]
+
+        def max_slope(attribute: str, nominal_value: float) -> float:
+            if not perturbed:
+                return 0.0
+            return max(
+                abs(getattr(value, attribute) - nominal_value)
+                / abs(value.boundary_perturbation - nominal)
+                for value in perturbed
+            )
+
+        solution_errors = [value[0] for value in raw_metrics]
+        boundary_errors = [value[1] for value in raw_metrics]
+        return PoissonBoundarySensitivity(
+            boundary_mode=mode,
+            nominal_boundary_perturbation=nominal,
+            boundary_condition=resolved_boundary,
+            additive_boundary_condition=resolved_additive,
+            evaluations=evaluation_tuple,
+            mean_nominal_normalized_l2_error=(
+                sum(solution_errors) / len(solution_errors)
+            ),
+            worst_nominal_normalized_l2_error=max(solution_errors),
+            mean_boundary_condition_rmse=(
+                sum(boundary_errors) / len(boundary_errors)
+            ),
+            worst_boundary_condition_rmse=max(boundary_errors),
+            pde_residual_rmse=pde_residual_rmse,
+            max_nominal_normalized_l2_error_change_per_unit_perturbation=(
+                max_slope(
+                    "nominal_normalized_l2_error",
+                    nominal_solution_error,
+                )
+            ),
+            max_boundary_condition_rmse_change_per_unit_perturbation=(
+                max_slope(
+                    "boundary_condition_rmse",
+                    nominal_boundary_error,
+                )
+            ),
+        )
+    finally:
+        model.train(was_training)
+
+
 def evaluate_poisson_laplace_sensitivity(
     model: nn.Module,
     points: PoissonPointSets,
@@ -786,6 +1193,7 @@ def evaluate_poisson_laplace_sensitivity(
     forcing_mode: str = "scaled",
     nominal_forcing_perturbation: float | None = None,
     additive_solution_terms: int = 50,
+    boundary_condition: str | Mapping[str, Any] | None = None,
 ) -> PoissonLaplaceSensitivity:
     """Propagate a local diagonal-GGN Laplace posterior to RHS metrics.
 
@@ -799,6 +1207,7 @@ def evaluate_poisson_laplace_sensitivity(
     """
 
     mode = _forcing_mode(forcing_mode)
+    resolved_boundary = resolve_poisson_boundary_condition(boundary_condition)
     perturbations = tuple(
         _forcing_perturbation(mode, value) for value in forcing_scales
     )
@@ -877,6 +1286,7 @@ def evaluate_poisson_laplace_sensitivity(
             forcing_scale=1.0,
         )
         boundary_prediction = _scalar_prediction(model, boundary)
+        boundary_target = poisson_boundary_values(boundary, resolved_boundary)
         observation_parts = []
         if pde_weight > 0.0:
             observation_parts.append(
@@ -885,7 +1295,7 @@ def evaluate_poisson_laplace_sensitivity(
         if boundary_weight > 0.0:
             observation_parts.append(
                 math.sqrt(boundary_weight / boundary_prediction.numel())
-                * boundary_prediction
+                    * (boundary_prediction - boundary_target)
             )
         observations = torch.cat(observation_parts)
         half_clean_loss = 0.5 * observations.square().sum()
@@ -948,6 +1358,10 @@ def evaluate_poisson_laplace_sensitivity(
             forcing_scale=0.0,
         )
         reference_solution = exact_poisson_solution(evaluation)
+        boundary_solution = poisson_boundary_values(
+            evaluation,
+            resolved_boundary,
+        )
         additive_solution = (
             constant_poisson_solution(
                 evaluation,
@@ -960,6 +1374,7 @@ def evaluate_poisson_laplace_sensitivity(
         nominal_solution_rms = (
             nominal_scale * reference_solution
             + nominal_additive * additive_solution
+            + boundary_solution
         ).square().mean().sqrt()
         confidence_z = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
         tiny = torch.finfo(dtype).tiny
@@ -991,13 +1406,21 @@ def evaluate_poisson_laplace_sensitivity(
 
         evaluation_boundary_prediction = _scalar_prediction(model, boundary)
         boundary_condition_rmse = metric_summary(
-            evaluation_boundary_prediction.square().mean().clamp_min(tiny).sqrt()
+            (evaluation_boundary_prediction - boundary_target)
+            .square()
+            .mean()
+            .clamp_min(tiny)
+            .sqrt()
         )
 
         evaluations = []
         for perturbation in perturbations:
             scale, additive = _forcing_parameters(mode, perturbation)
-            exact = scale * reference_solution + additive * additive_solution
+            exact = (
+                scale * reference_solution
+                + additive * additive_solution
+                + boundary_solution
+            )
             difference_mse = (prediction - exact).square().mean()
             nominal_normalized_l2 = (
                 difference_mse.clamp_min(tiny).sqrt() / nominal_solution_rms

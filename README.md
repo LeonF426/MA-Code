@@ -204,6 +204,26 @@ before creating an optimizer.
   averaged gradient. `normalized: true` makes the sharpness value a global radius;
   otherwise it is the per-coordinate Gaussian standard deviation.
 
+The algorithm and base optimizer are independent. `training.algorithm` chooses
+the full-batch, minibatch, or Gaussian-averaged gradient objective, while
+`training.optimizer.name` chooses how that gradient is applied. Both ordinary
+`sgd` training and `s_sam` support:
+
+```python
+{"name": "sgd", "momentum": 0.9, "weight_decay": 0.0}
+{"name": "adam", "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 0.0}
+{"name": "adamw", "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 0.0}
+{"name": "adagrad", "lr_decay": 0.0, "eps": 1e-10, "weight_decay": 0.0}
+```
+
+For S-SAM, Adam or Adagrad consumes the same Monte Carlo averaged gradient that
+plain SGD would consume; its moment or accumulator state is updated only once
+per training step after the clean parameters have been restored. The exact
+theorem-inspired tamed-SGD interpretation applies only to plain SGD without
+momentum or weight decay. Adam and Adagrad still receive the configured scalar
+learning-rate policy, but they are empirical optimizer variants rather than
+instances of that SGD guarantee.
+
 Both learning rate and sharpness scale accept `constant`, `inverse_time`, `linear`,
 `cosine`, or `piecewise` schedules. For S-SAM, the theorem-inspired adaptive policy
 can use the current Monte Carlo objective estimate:
@@ -404,9 +424,18 @@ severity and interpolation sampling are configured in
 problem
 
 ```text
-u*(x,y) = sin(pi*x) sin(pi*y)
--Delta u = 2*pi^2 sin(pi*x) sin(pi*y),   u|boundary = 0.
+u*(x,y) = sin(pi*x) sin(pi*y) + h(x,y)
+-Delta u = 2*pi^2 sin(pi*x) sin(pi*y),   u|boundary = g = h|boundary.
 ```
+
+Here `h` is a configurable harmonic extension, so changing the boundary data
+does not silently alter the right-hand side and the exact solution remains
+available. `CONFIG["pinn"]["boundary_condition"]["name"]` accepts `"zero"`,
+`"constant"`, `"affine"`, `"bilinear"`, or `"harmonic_polynomial"`. The
+coefficient keys are `constant`, `x`, `y`, `xy`, and `x2_minus_y2`; each simpler
+choice accepts the corresponding prefix of that harmonic basis. The example
+uses a nonzero bilinear condition, while omitting the section retains the old
+homogeneous Dirichlet problem.
 
 It uses a configurable tanh MLP and the complete weighted PDE-residual plus
 boundary loss. Its initialization opts into non-function-preserving layerwise
@@ -422,7 +451,7 @@ fields and clean versus Gaussian-averaged loss histories. Missing Gaussian curve
 (for example for SGD) are skipped.
 
 The final SGD and S-SAM parameters are also evaluated, without retraining, under
-one of two configurable alternative-PDE families:
+two kinds of controlled problem perturbations. The alternative-PDE families are:
 
 ```text
 scaled:    -Delta u = a*f
@@ -442,10 +471,47 @@ from the nominal RHS. The model prediction and its Laplacian are computed once
 per algorithm, keeping either sweep much cheaper than training or repeated
 sharpness evaluation.
 
+The Dirichlet-value families are configured independently under
+`CONFIG["pinn"]["evaluation"]["boundary_uncertainty"]`:
+
+```text
+scaled:    g_a = a*g
+additive:  g_epsilon = g + epsilon*q
+```
+
+The additive direction `q` is itself any supported harmonic boundary choice
+(constant one by default). Consequently every perturbed problem has the exact
+solution `sin(pi*x)sin(pi*y) + a*h` or
+`sin(pi*x)sin(pi*y) + h + epsilon*q_extension`, with the original RHS fixed.
+Both families are evaluated by default. Separate
+`boundary_sensitivity_scaled.png` and `boundary_sensitivity_additive.png` plots
+show the imposed boundary-data change, exact-solution mismatch, and boundary
+condition mismatch. `metrics.json` stores every evaluation plus mean/worst
+metrics and maximum changes per unit perturbation under
+`boundary_sensitivities`. These are deterministic frozen-model stress tests,
+not retraining runs or calibrated uncertainty distributions.
+
+[`examples/grid_search_poisson_sgd.py`](examples/grid_search_poisson_sgd.py)
+can compare SGD, Adam, and Adagrad on the same initialization seeds, points, and
+minibatch order. Optimizers are grid values at the complete
+`training.optimizer` path, rather than a Cartesian product of incompatible
+optimizer-specific fields. For example:
+
+```python
+"training.optimizer": [
+    {"name": "sgd", "momentum": 0.0},
+    {"name": "adam", "betas": [0.9, 0.999]},
+    {"name": "adagrad", "lr_decay": 0.0},
+]
+```
+
+The selected result is written to `optimal_optimizer_config.json`; the former
+`optimal_sgd_config.json` filename is also written for compatibility.
+
 The console labels the nominal equation as `ORIGINAL RHS`, and
 `forcing_sensitivity.png` compares SGD/S-SAM boundary-condition mismatch,
 solution mismatch, and PDE-residual mismatch. The boundary curve reports RMSE
-against the zero Dirichlet condition; because the frozen model and boundary
+against the configured Dirichlet condition; because the frozen model and boundary
 condition do not change during an RHS sweep, it is expected to remain constant
 and makes that invariance explicit. The solution metric uses the fixed
 nominal exact-solution norm in its denominator,
@@ -501,7 +567,8 @@ python examples/run_poisson_pinn_seeds.py --runs 10 --start-seed 100
 `--seed-step` controls the increment between seeds. Every repetition receives a
 fresh config from `build_config(seed)` and writes to the normal non-overwriting
 Poisson artifact directory. Each trained model is evaluated under both the
-scaled and additive RHS families without retraining. After the final run, its
+scaled and additive RHS families and both configured boundary families without
+retraining. After the final run, its
 `multi_seed_summary` directory contains separate scaled and additive figures.
 Their curves are means over all requested seeds and their shaded regions show
 one sample standard deviation; the plotted values are also saved to the summary

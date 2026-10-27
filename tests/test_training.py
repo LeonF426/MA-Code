@@ -50,6 +50,36 @@ def test_sgd_and_ssam_share_result_shape():
     assert len(ssam.parameter_snapshots) >= 3
 
 
+@pytest.mark.parametrize("algorithm", ["sgd", "s_sam"])
+@pytest.mark.parametrize(
+    "optimizer",
+    [
+        {"name": "adam", "betas": [0.9, 0.999], "eps": 1e-8},
+        {
+            "name": "adagrad",
+            "lr_decay": 0.0,
+            "initial_accumulator_value": 0.0,
+            "eps": 1e-10,
+        },
+    ],
+)
+def test_adam_and_adagrad_apply_sgd_or_ssam_gradients(algorithm, optimizer):
+    data = make_linear_regression_dataset(32, 2, [2.0, -1.0], seed=1)
+    config = _training(algorithm)
+    config["steps"] = 3
+    config["learning_rate"] = {"name": "constant", "value": 0.01}
+    config["optimizer"] = optimizer
+
+    result = train(_model(), data, config)
+
+    assert len(result.history["loss"]) == 3
+    assert all(math.isfinite(value) for value in result.history["loss"])
+    assert any(
+        not torch.allclose(parameter, torch.zeros_like(parameter))
+        for parameter in result.model.parameters()
+    )
+
+
 def test_ssam_reuses_regularized_loss_for_adaptive_learning_rate():
     config = {
         "model": {

@@ -17,21 +17,24 @@ from ssam import (
     create_run_artifacts,
     evaluate_average_sharpness_closure,
     evaluate_average_sharpness_interpolation_closure,
+    evaluate_poisson_boundary_sensitivity,
     evaluate_poisson_forcing_sensitivity,
     evaluate_poisson_laplace_sensitivity,
     evaluate_poisson_pinn,
     plot_pinn_training_history,
+    plot_poisson_boundary_sensitivity,
     plot_poisson_forcing_sensitivity,
     plot_poisson_solutions,
     plot_sharpness_interpolation,
     poisson_loss_components,
+    resolve_poisson_boundary_condition,
     train_poisson_pinn,
     write_training_history,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SEED = 22_478_666
+SEED = 22_478_666_123
 
 
 def build_config(seed: int = SEED) -> dict[str, Any]:
@@ -46,8 +49,8 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
             "type": "mlp",
             "input_dim": 2,
             "output_dim": 1,
-            "depth": 4,
-            "width": 64,
+            "depth": 3,
+            "width": 48,
             "activation": "tanh",
             "output_activation": "identity",
             "bias": True,
@@ -74,6 +77,16 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
         "pinn": {
             "pde_weight": 1.0,
             "boundary_weight": 7.5,
+            # Exact-solution boundary choices: zero, constant, affine,
+            # bilinear, or harmonic_polynomial. All are harmonic extensions,
+            # so they alter g and u exactly without altering the RHS.
+            "boundary_condition": {
+                "name": "bilinear",
+                "constant": 0.10,
+                "x": 0.15,
+                "y": -0.05,
+                "xy": 0.10,
+            },
             "sharpness_components": ["pde", "boundary"],
             "algorithms": ["sgd", "s_sam"],
             "output_dir": "outputs/poisson_pinn",
@@ -122,6 +135,22 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
                         "solution_series_terms": 50,
                     },
                 },
+                # Frozen-model stress tests for the Dirichlet values. Scaled
+                # uses g_a=a*g. Additive uses g_epsilon=g+epsilon*q, where q
+                # is another exactly extendable harmonic boundary function.
+                "boundary_uncertainty": {
+                    "mode": "scaled",
+                    "modes": ["scaled", "additive"],
+                    "scaled": {
+                        "values": [0.95, 0.975, 1.0, 1.025, 1.05],
+                        "nominal": 1.0,
+                    },
+                    "additive": {
+                        "values": [-0.10, -0.05, 0.0, 0.05, 0.10],
+                        "nominal": 0.0,
+                        "direction": {"name": "constant", "value": 1.0},
+                    },
+                },
                 # Local epistemic-uncertainty approximation around each final
                 # parameter vector. These bands do not randomize the RHS.
                 "laplace": {
@@ -141,16 +170,16 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
                 "name": "tamed",
                 "inserted_lr": {"name": "constant", "value": 2e-3},
             },
-            # "sharpness_scale": {
-            #     "name": "inverse_time",
-            #     "initial": 1,
-            #     "power": 0.5,
-            #     "floor": 0.0,
-            # },
             "sharpness_scale": {
-                "name": "constant",
-                "value": 0.1
+                "name": "inverse_time",
+                "initial": 1,
+                "power": 0.5,
+                "floor": 0.0,
             },
+            # "sharpness_scale": {
+            #     "name": "constant",
+            #     "value": 0.1
+            # },
             "perturbation": {
                 "distribution": "gaussian",
                 "samples": 20,
@@ -159,6 +188,10 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
                 "preserve_buffers": True,
                 "seed": seed + 6,
             },
+            # This base optimizer applies either the ordinary minibatch
+            # gradient or the Gaussian-averaged S-SAM gradient. Alternatives:
+            # {"name": "adam", "betas": [0.9, 0.999], "eps": 1e-8}
+            # {"name": "adagrad", "lr_decay": 0.0, "eps": 1e-10}
             "optimizer": {"name": "sgd", "momentum": 0.0},
             "seed": seed + 7,
             "batch_seed": seed + 8,
@@ -213,6 +246,45 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
         }
     active_forcing_settings = forcing_settings[forcing_mode]
     nominal_forcing_perturbation = active_forcing_settings["nominal"]
+    boundary_condition = pinn_config.get("boundary_condition")
+    resolved_boundary_condition = resolve_poisson_boundary_condition(
+        boundary_condition
+    )
+    boundary_config = evaluation_config.get(
+        "boundary_uncertainty",
+        {
+            "mode": "scaled",
+            "scaled": {"values": [1.0], "nominal": 1.0},
+        },
+    )
+    boundary_mode = str(boundary_config.get("mode", "scaled")).lower()
+    configured_boundary_modes = boundary_config.get("modes", (boundary_mode,))
+    if isinstance(configured_boundary_modes, str):
+        configured_boundary_modes = (configured_boundary_modes,)
+    boundary_modes = tuple(
+        dict.fromkeys(str(mode).lower() for mode in configured_boundary_modes)
+    )
+    if boundary_mode not in boundary_modes:
+        boundary_modes = (boundary_mode, *boundary_modes)
+    if not boundary_modes or any(
+        mode not in {"scaled", "additive"} for mode in boundary_modes
+    ):
+        raise ValueError(
+            "pinn.evaluation.boundary_uncertainty.modes must contain only "
+            "'scaled' and/or 'additive'"
+        )
+    boundary_settings = {}
+    for mode in boundary_modes:
+        mode_config = boundary_config[mode]
+        boundary_settings[mode] = {
+            "values": mode_config["values"],
+            "nominal": float(mode_config["nominal"]),
+            "additive_boundary_condition": (
+                mode_config.get("direction") if mode == "additive" else None
+            ),
+        }
+    active_boundary_settings = boundary_settings[boundary_mode]
+    nominal_boundary_perturbation = active_boundary_settings["nominal"]
     algorithms = tuple(pinn_config.get("algorithms", ("sgd", "s_sam")))
     configs = {}
     for algorithm in algorithms:
@@ -243,6 +315,7 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
                 boundary,
                 pde_weight=float(configuration["pinn"]["pde_weight"]),
                 boundary_weight=float(configuration["pinn"]["boundary_weight"]),
+                boundary_condition=boundary_condition,
             )["loss"]
 
         measurement = evaluate_average_sharpness_closure(
@@ -277,6 +350,7 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
                 boundary,
                 pde_weight=float(configuration["pinn"]["pde_weight"]),
                 boundary_weight=float(configuration["pinn"]["boundary_weight"]),
+                boundary_condition=boundary_condition,
             )["loss"]
 
         interpolation = evaluate_average_sharpness_interpolation_closure(
@@ -320,6 +394,7 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
     results = {}
     metrics = {}
     forcing_sensitivities_by_mode = {mode: {} for mode in forcing_modes}
+    boundary_sensitivities_by_mode = {mode: {} for mode in boundary_modes}
     laplace_sensitivities_by_mode = {mode: {} for mode in forcing_modes}
     laplace_config = evaluation_config.get("laplace", {})
     for algorithm, config in configs.items():
@@ -335,6 +410,7 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
             sharpness_seed=int(evaluation_config["sharpness_seed"]),
             antithetic=bool(evaluation_config.get("antithetic", True)),
             normalized=config["training"]["perturbation"]["normalized"],
+            boundary_condition=boundary_condition,
         )
         for mode, settings in forcing_settings.items():
             forcing_sensitivities_by_mode[mode][algorithm] = (
@@ -345,6 +421,7 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
                     forcing_mode=mode,
                     nominal_forcing_perturbation=settings["nominal"],
                     additive_solution_terms=settings["additive_solution_terms"],
+                    boundary_condition=boundary_condition,
                 )
             )
             if bool(laplace_config.get("enabled", True)):
@@ -371,10 +448,26 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
                         forcing_mode=mode,
                         nominal_forcing_perturbation=settings["nominal"],
                         additive_solution_terms=settings["additive_solution_terms"],
+                        boundary_condition=boundary_condition,
                     )
                 )
+        for mode, settings in boundary_settings.items():
+            boundary_sensitivities_by_mode[mode][algorithm] = (
+                evaluate_poisson_boundary_sensitivity(
+                    model,
+                    points,
+                    settings["values"],
+                    boundary_condition=boundary_condition,
+                    boundary_mode=mode,
+                    nominal_boundary_perturbation=settings["nominal"],
+                    additive_boundary_condition=settings[
+                        "additive_boundary_condition"
+                    ],
+                )
+            )
 
     forcing_sensitivities = forcing_sensitivities_by_mode[forcing_mode]
+    boundary_sensitivities = boundary_sensitivities_by_mode[boundary_mode]
     laplace_sensitivities = laplace_sensitivities_by_mode[forcing_mode]
 
     original_rhs = {
@@ -388,7 +481,17 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
         f"{original_rhs['rhs_sine_coefficient']:.6g} "
         "sin(pi*x) sin(pi*y)"
     )
+    print(
+        "TRAINING BOUNDARY | harmonic extension coefficients: "
+        + ", ".join(
+            f"{name}={value:g}"
+            for name, value in resolved_boundary_condition.items()
+            if name != "name"
+        )
+        + f" (choice={resolved_boundary_condition['name']})"
+    )
     forcing_label = "scale" if forcing_mode == "scaled" else "epsilon"
+    boundary_label = "scale" if boundary_mode == "scaled" else "epsilon"
 
     for algorithm, values in metrics.items():
         sharpness = values.average_sharpness
@@ -439,6 +542,39 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
             "PDE RMSE="
             f"{sensitivity.max_pde_residual_rmse_change_per_unit_scale:.4e}"
         )
+        boundary_sensitivity = boundary_sensitivities[algorithm]
+        for evaluation in boundary_sensitivity.evaluations:
+            boundary_kind = (
+                "TRAINING"
+                if math.isclose(
+                    evaluation.boundary_perturbation,
+                    nominal_boundary_perturbation,
+                )
+                else "PERTURBED"
+            )
+            print(
+                f"{algorithm:>5} | {boundary_kind} BOUNDARY "
+                f"{boundary_label}={evaluation.boundary_perturbation:g} | "
+                "boundary change RMSE="
+                f"{evaluation.boundary_change_rmse_from_nominal:.4e} | "
+                "nominal-normalized L2="
+                f"{evaluation.nominal_normalized_l2_error:.4e} | "
+                "boundary mismatch RMSE="
+                f"{evaluation.boundary_condition_rmse:.4e} | "
+                f"PDE RMSE={evaluation.pde_residual_rmse:.4e}"
+            )
+        print(
+            f"{algorithm:>5} | boundary sensitivity | "
+            "worst nominal-normalized L2="
+            f"{boundary_sensitivity.worst_nominal_normalized_l2_error:.4e} | "
+            "worst boundary RMSE="
+            f"{boundary_sensitivity.worst_boundary_condition_rmse:.4e} | "
+            f"max changes/unit {boundary_label}: "
+            "nominal-normalized L2="
+            f"{boundary_sensitivity.max_nominal_normalized_l2_error_change_per_unit_perturbation:.4e}, "
+            "boundary RMSE="
+            f"{boundary_sensitivity.max_boundary_condition_rmse_change_per_unit_perturbation:.4e}"
+        )
         laplace = laplace_sensitivities.get(algorithm)
         if laplace is not None:
             print(
@@ -476,6 +612,7 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
         {name: result.model for name, result in results.items()},
         points,
         output_dir / "solutions.png",
+        boundary_condition=boundary_condition,
     )
     for mode in forcing_modes:
         sensitivity_filename = (
@@ -489,6 +626,16 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
             output_dir / sensitivity_filename,
             laplace_sensitivities=laplace_sensitivities_by_mode[mode],
         )
+    for mode in boundary_modes:
+        boundary_sensitivity_filename = (
+            "boundary_sensitivity.png"
+            if len(boundary_modes) == 1
+            else f"boundary_sensitivity_{mode}.png"
+        )
+        plot_poisson_boundary_sensitivity(
+            boundary_sensitivities_by_mode[mode],
+            output_dir / boundary_sensitivity_filename,
+        )
     history_plot = configuration["visualization"]["training_history"]
     plot_pinn_training_history(
         results,
@@ -501,11 +648,18 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
         json.dumps(
             {
                 "original_rhs": original_rhs,
+                "training_boundary_condition": resolved_boundary_condition,
                 "uncertainty_interpretation": {
                     "forcing_sensitivity": (
                         "Deterministic frozen-model stress test under a hand-selected "
                         f"{', '.join(forcing_modes)} RHS family/families; not a "
                         "probability model."
+                    ),
+                    "boundary_sensitivity": (
+                        "Deterministic frozen-model stress test under a "
+                        "hand-selected scaled and/or additive Dirichlet family. "
+                        "Every family member has an analytic harmonic extension; "
+                        "this is not a probability model."
                     ),
                     "laplace_sensitivity": (
                         "Local diagonal-GGN Gaussian parameter approximation with "
@@ -528,6 +682,15 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
                                 forcing_sensitivities_by_mode[mode][name]
                             )
                             for mode in forcing_modes
+                        },
+                        "boundary_sensitivity": asdict(
+                            boundary_sensitivities[name]
+                        ),
+                        "boundary_sensitivities": {
+                            mode: asdict(
+                                boundary_sensitivities_by_mode[mode][name]
+                            )
+                            for mode in boundary_modes
                         },
                         "laplace_sensitivity": (
                             asdict(laplace_sensitivities[name])

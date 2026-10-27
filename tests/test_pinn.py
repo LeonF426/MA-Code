@@ -8,14 +8,17 @@ from ssam import (
     build_model,
     build_poisson_points,
     constant_poisson_solution,
+    evaluate_poisson_boundary_sensitivity,
     evaluate_poisson_forcing_sensitivity,
     evaluate_poisson_laplace_sensitivity,
     evaluate_poisson_pinn,
     exact_poisson_solution,
     normalize_config,
+    poisson_boundary_values,
     poisson_loss_components,
     poisson_residual,
     plot_pinn_training_history,
+    plot_poisson_boundary_sensitivity,
     plot_poisson_forcing_sensitivity,
     plot_poisson_forcing_sensitivity_average,
     plot_poisson_solutions,
@@ -37,6 +40,20 @@ class TrainableExactSolution(nn.Module):
 
     def forward(self, coordinates):
         return (self.scale * exact_poisson_solution(coordinates)).unsqueeze(-1)
+
+
+class TrainableBoundaryExactSolution(nn.Module):
+    def __init__(self, boundary_condition):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0, dtype=torch.float64))
+        self.boundary_condition = boundary_condition
+
+    def forward(self, coordinates):
+        exact = exact_poisson_solution(
+            coordinates,
+            boundary_condition=self.boundary_condition,
+        )
+        return (self.scale * exact).unsqueeze(-1)
 
 
 def _config(algorithm="s_sam"):
@@ -81,6 +98,100 @@ def test_exact_solution_has_zero_poisson_residual_and_boundary_loss():
     )
     torch.testing.assert_close(residual, torch.zeros_like(residual), atol=1e-9, rtol=1e-9)
     assert float(losses["boundary_loss"]) == pytest.approx(0.0, abs=1e-30)
+
+
+@pytest.mark.parametrize(
+    "boundary_condition",
+    [
+        "zero",
+        {"name": "constant", "value": 0.4},
+        {"name": "affine", "constant": 0.1, "x": 0.2, "y": -0.3},
+        {
+            "name": "bilinear",
+            "constant": 0.1,
+            "x": 0.2,
+            "y": -0.3,
+            "xy": 0.4,
+        },
+        {
+            "name": "harmonic_polynomial",
+            "constant": 0.1,
+            "x": 0.2,
+            "y": -0.3,
+            "xy": 0.4,
+            "x2_minus_y2": 0.5,
+        },
+    ],
+)
+def test_configured_boundary_choices_have_exact_solution(boundary_condition):
+    points = build_poisson_points(_config())
+    model = TrainableBoundaryExactSolution(boundary_condition)
+
+    residual = poisson_residual(model, points.interior, create_graph=False)
+    losses = poisson_loss_components(
+        model,
+        points.interior,
+        points.boundary,
+        boundary_condition=boundary_condition,
+    )
+
+    torch.testing.assert_close(
+        residual,
+        torch.zeros_like(residual),
+        atol=1e-9,
+        rtol=1e-9,
+    )
+    assert float(losses["boundary_loss"].detach()) == pytest.approx(
+        0.0,
+        abs=1e-28,
+    )
+
+
+def test_poisson_training_pipeline_uses_configured_boundary_values():
+    boundary_condition = {
+        "name": "bilinear",
+        "constant": 0.1,
+        "x": 0.2,
+        "y": -0.1,
+        "xy": 0.3,
+    }
+    config = _config("sgd")
+    config["training"]["steps"] = 1
+    config["pinn"]["boundary_condition"] = boundary_condition
+    points = build_poisson_points(config)
+
+    result = train_poisson_pinn(
+        TrainableBoundaryExactSolution(boundary_condition),
+        points,
+        config,
+    )
+
+    assert result.history["clean_boundary_loss"][0] == pytest.approx(
+        0.0,
+        abs=1e-28,
+    )
+
+
+def test_poisson_metrics_use_configured_boundary_exact_solution():
+    boundary_condition = {
+        "name": "harmonic_polynomial",
+        "constant": 0.1,
+        "x": 0.2,
+        "y": -0.1,
+        "xy": 0.3,
+        "x2_minus_y2": 0.15,
+    }
+    points = build_poisson_points(_config("sgd"))
+
+    metrics = evaluate_poisson_pinn(
+        TrainableBoundaryExactSolution(boundary_condition),
+        points,
+        boundary_condition=boundary_condition,
+    )
+
+    assert metrics.relative_l2_error == pytest.approx(0.0, abs=1e-12)
+    assert metrics.pde_residual_rmse == pytest.approx(0.0, abs=1e-8)
+    assert metrics.boundary_rmse == pytest.approx(0.0, abs=1e-12)
 
 
 def test_poisson_residual_supports_scaled_forcing():
@@ -216,6 +327,90 @@ def test_poisson_forcing_sensitivity_requires_included_nonzero_nominal_scale():
         )
 
 
+def test_poisson_boundary_sensitivity_supports_scaled_exact_family():
+    boundary_condition = {
+        "name": "bilinear",
+        "constant": 0.1,
+        "x": 0.2,
+        "y": -0.1,
+        "xy": 0.3,
+    }
+    points = build_poisson_points(_config("sgd"))
+    result = evaluate_poisson_boundary_sensitivity(
+        TrainableBoundaryExactSolution(boundary_condition),
+        points,
+        [0.5, 1.0, 1.5],
+        boundary_condition=boundary_condition,
+    )
+
+    nominal = result.evaluations[1]
+    increased = result.evaluations[2]
+    assert result.boundary_mode == "scaled"
+    assert nominal.nominal_normalized_l2_error == pytest.approx(0.0, abs=1e-12)
+    assert nominal.boundary_condition_rmse == pytest.approx(0.0, abs=1e-12)
+    assert all(
+        evaluation.pde_residual_rmse == pytest.approx(0.0, abs=1e-8)
+        for evaluation in result.evaluations
+    )
+    extension = poisson_boundary_values(points.evaluation, boundary_condition)
+    nominal_solution = exact_poisson_solution(
+        points.evaluation,
+        boundary_condition=boundary_condition,
+    )
+    expected_solution_error = float(
+        torch.linalg.vector_norm(0.5 * extension)
+        / torch.linalg.vector_norm(nominal_solution)
+    )
+    assert increased.nominal_normalized_l2_error == pytest.approx(
+        expected_solution_error
+    )
+    boundary_values = poisson_boundary_values(points.boundary, boundary_condition)
+    assert increased.boundary_change_rmse_from_nominal == pytest.approx(
+        float((0.5 * boundary_values).square().mean().sqrt())
+    )
+
+
+def test_poisson_boundary_sensitivity_supports_additive_exact_family():
+    boundary_condition = {"name": "constant", "value": 0.2}
+    additive_direction = {
+        "name": "affine",
+        "constant": 0.0,
+        "x": 1.0,
+        "y": -0.5,
+    }
+    points = build_poisson_points(_config("sgd"))
+    result = evaluate_poisson_boundary_sensitivity(
+        TrainableBoundaryExactSolution(boundary_condition),
+        points,
+        [-0.2, 0.0, 0.2],
+        boundary_condition=boundary_condition,
+        boundary_mode="additive",
+        nominal_boundary_perturbation=0.0,
+        additive_boundary_condition=additive_direction,
+    )
+
+    nominal = result.evaluations[1]
+    increased = result.evaluations[2]
+    assert result.boundary_mode == "additive"
+    assert result.additive_boundary_condition["name"] == "affine"
+    assert nominal.nominal_normalized_l2_error == pytest.approx(0.0, abs=1e-12)
+    additive_solution = poisson_boundary_values(
+        points.evaluation,
+        additive_direction,
+    )
+    nominal_solution = exact_poisson_solution(
+        points.evaluation,
+        boundary_condition=boundary_condition,
+    )
+    assert increased.nominal_normalized_l2_error == pytest.approx(
+        float(
+            torch.linalg.vector_norm(0.2 * additive_solution)
+            / torch.linalg.vector_norm(nominal_solution)
+        )
+    )
+    assert increased.boundary_additive_scale == pytest.approx(0.2)
+
+
 def test_poisson_laplace_sensitivity_produces_local_metric_intervals():
     config = _config("sgd")
     points = build_poisson_points(config)
@@ -272,6 +467,37 @@ def test_poisson_laplace_sensitivity_supports_additive_constant_family():
         0.25,
     ]
     assert all(value.forcing_scale == 1.0 for value in result.evaluations)
+
+
+def test_poisson_laplace_sensitivity_uses_nonzero_boundary_target():
+    boundary_condition = {
+        "name": "bilinear",
+        "constant": 0.1,
+        "x": 0.2,
+        "y": -0.1,
+        "xy": 0.3,
+    }
+    points = build_poisson_points(_config("sgd"))
+
+    result = evaluate_poisson_laplace_sensitivity(
+        TrainableBoundaryExactSolution(boundary_condition),
+        points,
+        [1.0],
+        prior_precision=10.0,
+        curvature_probes=1,
+        boundary_condition=boundary_condition,
+    )
+
+    evaluation = result.evaluations[0]
+    assert result.clean_gradient_norm == pytest.approx(0.0, abs=1e-8)
+    assert evaluation.nominal_normalized_l2_error.central == pytest.approx(
+        0.0,
+        abs=1e-12,
+    )
+    assert evaluation.boundary_condition_rmse.central == pytest.approx(
+        0.0,
+        abs=1e-12,
+    )
 
 
 def test_poisson_forcing_sensitivity_plot_shows_original_rhs_and_responses():
@@ -362,6 +588,34 @@ def test_poisson_forcing_sensitivity_plot_labels_additive_epsilon():
     assert "epsilon" in figure.axes[1].get_xlabel()
     nominal_line = figure.axes[1].lines[-1]
     assert set(nominal_line.get_xdata()) == {0.0}
+
+
+def test_poisson_boundary_sensitivity_plot_labels_both_families():
+    boundary_condition = {"name": "affine", "constant": 0.1, "x": 0.2}
+    points = build_poisson_points(_config("sgd"))
+    model = TrainableBoundaryExactSolution(boundary_condition)
+    scaled = evaluate_poisson_boundary_sensitivity(
+        model,
+        points,
+        [0.5, 1.0, 1.5],
+        boundary_condition=boundary_condition,
+    )
+    additive = evaluate_poisson_boundary_sensitivity(
+        model,
+        points,
+        [-0.1, 0.0, 0.1],
+        boundary_condition=boundary_condition,
+        boundary_mode="additive",
+    )
+
+    scaled_figure = plot_poisson_boundary_sensitivity({"exact": scaled})
+    additive_figure = plot_poisson_boundary_sensitivity({"exact": additive})
+
+    assert "boundary-value scaling" in scaled_figure._suptitle.get_text()
+    assert "Boundary scale" in scaled_figure.axes[0].get_xlabel()
+    assert "additive shifts" in additive_figure._suptitle.get_text()
+    assert "epsilon" in additive_figure.axes[0].get_xlabel()
+    assert scaled_figure.axes[2].get_title() == "Boundary-condition mismatch"
 
 
 def test_ssam_pinn_tracks_clean_and_gaussian_component_losses():

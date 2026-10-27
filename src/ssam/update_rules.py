@@ -1,4 +1,4 @@
-"""Extensible parameter-update rules, including stochastic sharpness-aware SGD."""
+"""Extensible gradient objectives with configurable base optimizers."""
 
 from __future__ import annotations
 
@@ -101,12 +101,50 @@ class UpdateRule(Protocol):
     ) -> UpdateResult: ...
 
 
-def _build_optimizer(parameters, config: Mapping[str, Any]) -> torch.optim.Optimizer:
+def build_optimizer(
+    parameters,
+    config: Mapping[str, Any],
+    *,
+    learning_rate: float = 1.0,
+) -> torch.optim.Optimizer:
+    """Build a validated optimizer for ordinary or S-SAM gradients.
+
+    ``training.algorithm`` controls which gradient objective is constructed;
+    this function independently controls how that gradient is applied.  The
+    same optimizer choices are consequently available to both ``sgd`` and
+    ``s_sam`` update rules.
+    """
+
     name = str(config.get("name", "sgd")).lower()
     allowed = {
-        "sgd": {"name", "weight_decay", "momentum", "nesterov"},
-        "adam": {"name", "weight_decay", "betas"},
-        "adamw": {"name", "weight_decay", "betas"},
+        "sgd": {
+            "name",
+            "weight_decay",
+            "momentum",
+            "dampening",
+            "nesterov",
+        },
+        "adam": {
+            "name",
+            "weight_decay",
+            "betas",
+            "eps",
+            "amsgrad",
+        },
+        "adamw": {
+            "name",
+            "weight_decay",
+            "betas",
+            "eps",
+            "amsgrad",
+        },
+        "adagrad": {
+            "name",
+            "weight_decay",
+            "lr_decay",
+            "initial_accumulator_value",
+            "eps",
+        },
     }
     if name not in allowed:
         raise ValueError(f"Unknown optimizer {name!r}")
@@ -114,13 +152,14 @@ def _build_optimizer(parameters, config: Mapping[str, Any]) -> torch.optim.Optim
     if unknown:
         raise ValueError(f"Unknown {name} optimizer keys: {sorted(unknown)}")
     common = {
-        "lr": 1.0,
+        "lr": float(learning_rate),
         "weight_decay": float(config.get("weight_decay", 0.0)),
     }
     if name == "sgd":
         return torch.optim.SGD(
             parameters,
             momentum=float(config.get("momentum", 0.0)),
+            dampening=float(config.get("dampening", 0.0)),
             nesterov=bool(config.get("nesterov", False)),
             **common,
         )
@@ -128,15 +167,35 @@ def _build_optimizer(parameters, config: Mapping[str, Any]) -> torch.optim.Optim
         return torch.optim.Adam(
             parameters,
             betas=tuple(config.get("betas", (0.9, 0.999))),
+            eps=float(config.get("eps", 1e-8)),
+            amsgrad=bool(config.get("amsgrad", False)),
             **common,
         )
     if name == "adamw":
         return torch.optim.AdamW(
             parameters,
             betas=tuple(config.get("betas", (0.9, 0.999))),
+            eps=float(config.get("eps", 1e-8)),
+            amsgrad=bool(config.get("amsgrad", False)),
+            **common,
+        )
+    if name == "adagrad":
+        return torch.optim.Adagrad(
+            parameters,
+            lr_decay=float(config.get("lr_decay", 0.0)),
+            initial_accumulator_value=float(
+                config.get("initial_accumulator_value", 0.0)
+            ),
+            eps=float(config.get("eps", 1e-10)),
             **common,
         )
     raise AssertionError("Validated optimizer was not constructed")
+
+
+def _build_optimizer(parameters, config: Mapping[str, Any]) -> torch.optim.Optimizer:
+    """Build an optimizer whose learning rate is set by the update policy."""
+
+    return build_optimizer(parameters, config, learning_rate=1.0)
 
 
 def _set_learning_rate(optimizer: torch.optim.Optimizer, value: float) -> None:
@@ -654,7 +713,8 @@ class StochasticSharpnessUpdate:
             learning_rate,
         )
 
-        # With plain SGD, this performs:
+        # The configured optimizer now consumes the averaged S-SAM gradient.
+        # With plain SGD, this performs exactly:
         #
         # theta <- theta - learning_rate * mean_gradient.
         #

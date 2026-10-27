@@ -24,7 +24,7 @@ from .schedules import (
     register_schedule,
 )
 from .trainers import TrainingResult, train
-from .update_rules import UpdateResult, register_update_rule
+from .update_rules import UpdateResult, build_optimizer, register_update_rule
 from .visualization import (
     plot_sharpness_interpolation,
     plot_training_history,
@@ -40,6 +40,8 @@ from .average_sharpness import (
 )
 from .pinn import (
     LaplaceMetric,
+    PoissonBoundaryEvaluation,
+    PoissonBoundarySensitivity,
     PoissonForcingEvaluation,
     PoissonForcingSensitivity,
     PoissonLaplaceForcingEvaluation,
@@ -48,13 +50,16 @@ from .pinn import (
     PoissonPointSets,
     build_poisson_points,
     constant_poisson_solution,
+    evaluate_poisson_boundary_sensitivity,
     evaluate_poisson_forcing_sensitivity,
     evaluate_poisson_laplace_sensitivity,
     evaluate_poisson_pinn,
     exact_poisson_solution,
+    poisson_boundary_values,
     poisson_forcing,
     poisson_loss_components,
     poisson_residual,
+    resolve_poisson_boundary_condition,
     train_poisson_pinn,
 )
 from .linear_pinn import (
@@ -85,6 +90,7 @@ from .linear_pinn import (
 )
 from .visualization import (
     plot_1d_pinn_solutions,
+    plot_poisson_boundary_sensitivity,
     plot_poisson_forcing_sensitivity,
     plot_poisson_forcing_sensitivity_average,
     plot_pinn_training_history,
@@ -106,6 +112,8 @@ __all__ = [
     "LinearRescalingResult",
     "LinearPinnMetrics",
     "PoissonMetrics",
+    "PoissonBoundaryEvaluation",
+    "PoissonBoundarySensitivity",
     "PoissonForcingEvaluation",
     "PoissonForcingSensitivity",
     "PoissonLaplaceForcingEvaluation",
@@ -120,6 +128,7 @@ __all__ = [
     "build_advection_points",
     "build_heat_points",
     "build_model",
+    "build_optimizer",
     "build_polynomial_poisson_points",
     "build_poisson_points",
     "build_learning_rate_policy",
@@ -136,6 +145,7 @@ __all__ = [
     "evaluate_advection_pinn",
     "evaluate_heat_pinn",
     "evaluate_polynomial_poisson_pinn",
+    "evaluate_poisson_boundary_sensitivity",
     "evaluate_poisson_forcing_sensitivity",
     "evaluate_poisson_laplace_sensitivity",
     "evaluate_poisson_pinn",
@@ -144,12 +154,14 @@ __all__ = [
     "exact_heat_solution",
     "exact_polynomial_poisson_solution",
     "exact_poisson_solution",
+    "poisson_boundary_values",
     "make_linear_regression_dataset",
     "make_california_housing_dataset",
     "normalize_config",
     "plot_training_history",
     "plot_sharpness_interpolation",
     "plot_1d_pinn_solutions",
+    "plot_poisson_boundary_sensitivity",
     "plot_pinn_training_history",
     "plot_poisson_forcing_sensitivity",
     "plot_poisson_forcing_sensitivity_average",
@@ -167,6 +179,7 @@ __all__ = [
     "poisson_forcing",
     "poisson_loss_components",
     "poisson_residual",
+    "resolve_poisson_boundary_condition",
     "prepare_california_housing_data",
     "register_activation",
     "register_schedule",

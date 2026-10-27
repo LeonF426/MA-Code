@@ -586,6 +586,8 @@ def plot_poisson_solutions(
     points,
     path: str | Path | None = None,
     show: bool = False,
+    *,
+    boundary_condition=None,
 ):
     """Plot fields with shared color scales for solutions and absolute errors."""
 
@@ -613,7 +615,10 @@ def plot_poisson_solutions(
             prediction = model(coordinates)
             if prediction.ndim == 2 and prediction.shape[1] == 1:
                 prediction = prediction[:, 0]
-            exact = exact_poisson_solution(coordinates)
+            exact = exact_poisson_solution(
+                coordinates,
+                boundary_condition=boundary_condition,
+            )
             error = (prediction - exact).abs()
         model.train(was_training)
         exact = exact.detach().cpu()
@@ -882,6 +887,102 @@ def plot_poisson_forcing_sensitivity(
     _set_readable_y_scale(axes[1], solution_error_series)
     _set_readable_y_scale(axes[2], residual_series)
 
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    return _finish(fig, path, show)
+
+
+def plot_poisson_boundary_sensitivity(
+    sensitivities: Mapping[str, object],
+    path: str | Path | None = None,
+    show: bool = False,
+):
+    """Plot frozen-model response to scaled or additive Dirichlet data."""
+
+    if not sensitivities:
+        raise ValueError("At least one boundary-sensitivity result is required")
+    modes = {
+        getattr(sensitivity, "boundary_mode")
+        for sensitivity in sensitivities.values()
+    }
+    if len(modes) != 1:
+        raise ValueError("All boundary sensitivities in one plot need the same mode")
+    boundary_mode = modes.pop()
+    if boundary_mode not in {"scaled", "additive"}:
+        raise ValueError("boundary_mode must be 'scaled' or 'additive'")
+
+    plt = _pyplot(show)
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.2))
+    family_label = "scaling" if boundary_mode == "scaled" else "additive shifts"
+    fig.suptitle(
+        f"Frozen-model sensitivity to Poisson boundary-value {family_label}",
+        fontsize=14,
+    )
+    panel_series = [[] for _ in axes]
+    metric_specs = (
+        (
+            "boundary_change_rmse_from_nominal",
+            "Boundary-data perturbation",
+            "Boundary-data change RMSE",
+        ),
+        (
+            "nominal_normalized_l2_error",
+            "Solution mismatch",
+            "Nominal-normalized L2 solution error",
+        ),
+        (
+            "boundary_condition_rmse",
+            "Boundary-condition mismatch",
+            "Boundary-condition RMSE",
+        ),
+    )
+    for label, sensitivity in sensitivities.items():
+        evaluations = sorted(
+            sensitivity.evaluations,
+            key=lambda evaluation: evaluation.boundary_perturbation,
+        )
+        if not evaluations:
+            raise ValueError("A boundary-sensitivity result has no evaluations")
+        perturbations = np.asarray(
+            [value.boundary_perturbation for value in evaluations],
+            dtype=float,
+        )
+        for panel_index, (metric, _, _) in enumerate(metric_specs):
+            values = np.asarray(
+                [getattr(value, metric) for value in evaluations],
+                dtype=float,
+            )
+            axes[panel_index].plot(
+                perturbations,
+                values,
+                marker="o",
+                linewidth=2,
+                label=label,
+            )
+            panel_series[panel_index].append(values)
+
+    first = next(iter(sensitivities.values()))
+    nominal = first.nominal_boundary_perturbation
+    xlabel = (
+        "Boundary scale a in g_a = a g"
+        if boundary_mode == "scaled"
+        else "Additive epsilon in g_epsilon = g + epsilon q"
+    )
+    for axis, (_, title, ylabel), series in zip(
+        axes,
+        metric_specs,
+        panel_series,
+    ):
+        axis.axvline(
+            nominal,
+            color="black",
+            linestyle=":",
+            linewidth=1.5,
+            label="training boundary value",
+        )
+        axis.set(xlabel=xlabel, title=title, ylabel=ylabel)
+        axis.grid(alpha=0.25)
+        axis.legend(frameon=False)
+        _set_readable_y_scale(axis, series)
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     return _finish(fig, path, show)
 
