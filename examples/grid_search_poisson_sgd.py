@@ -1,16 +1,15 @@
-"""Grid-search gradient optimizers for configurable 2D Poisson PINNs.
+"""Grid-search optimizer hyperparameters for the zero-boundary Poisson PINN.
 
-The default problem is a manufactured solution on the unit square,
+The search uses the model architecture and Poisson PDE from
+:mod:`poisson_pinn`:
 
     -Delta u = f  in Omega,       u = g  on boundary(Omega),
 
-with exact harmonic boundary choices ``zero``, ``constant``, ``affine``,
-``bilinear``, and ``harmonic_polynomial``. Neither the right-hand side,
-boundary values, nor model are hard-coded in
-the search loop.  To use a different problem or model, point ``problem_factory``
-or ``model_factory`` at an importable ``"module:function"``.  A problem factory
-receives one setup dictionary and returns a :class:`PoissonProblem`; a model
-factory receives ``(model_config, seed)`` and returns ``torch.nn.Module``.
+with ``f = 2*pi^2*sin(pi*x)*sin(pi*y)``.  For this search, ``g`` is fixed to
+zero on the unit square.  The default search deliberately keeps the PDE,
+boundary condition, loss weights, collocation counts, and 4-by-64 tanh MLP
+fixed.  Its only search dimensions are batch size, learning rate, and optimizer
+momentum configuration (SGD momentum or Adam beta values).
 
 Examples (run from the repository root)::
 
@@ -18,10 +17,7 @@ Examples (run from the repository root)::
     python examples/grid_search_poisson_sgd.py --write-default-config search.json
     python examples/grid_search_poisson_sgd.py --config search.json
 
-The JSON config's ``grid`` is a Cartesian product of dotted config paths.  It
-can therefore tune optimizer settings as well as loss weights and architecture,
-for example ``training.learning_rate``, ``training.batch_size``,
-``training.optimizer.momentum``, ``loss_weights.boundary``, or ``model.width``.
+The JSON config's ``grid`` is a Cartesian product of dotted config paths.
 The main output is ``optimal_optimizer_config.json`` (with the former
 ``optimal_sgd_config.json`` retained as a compatibility alias); complete trial
 data are retained in ``grid_search_results.json`` and ``trials.csv``.
@@ -48,14 +44,18 @@ import torch
 from torch import nn
 
 from ssam import (
+    build_learning_rate_policy,
     build_model,
     build_optimizer,
+    build_schedule,
     poisson_boundary_values,
     resolve_poisson_boundary_condition,
 )
+from ssam.update_rules import build_update_rule
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SEED = 22_478_666_123
 
 
 @dataclass(frozen=True)
@@ -83,13 +83,14 @@ class PointSets:
 
 DEFAULT_GRID_SEARCH_CONFIG: dict[str, Any] = {
     "output_dir": "outputs/poisson_sgd_grid_search",
+    "max_candidates": 36,
     # Set either factory to e.g. "my_experiment:make_problem".  Null selects
     # the built-in manufactured-solution problem/model builders below.
     "problem_factory": None,
     "model_factory": None,
     "setups": [
         {
-            "name": "sine_1x1_zero_boundary",
+            "name": "poisson_pinn_zero_boundary",
             "problem": {
                 "amplitude": 1.0,
                 "modes": [1, 1],
@@ -103,53 +104,29 @@ DEFAULT_GRID_SEARCH_CONFIG: dict[str, Any] = {
                 "validation_boundary": 512,
                 "evaluation_resolution": 51,
                 "dtype": "float32",
-                "seed": 31415,
-            },
-        },
-        {
-            "name": "sine_2x1_nonzero_boundary",
-            "problem": {
-                "amplitude": 0.75,
-                "modes": [2, 1],
-                "boundary_condition": {
-                    "name": "bilinear",
-                    "constant": 0.1,
-                    "x": 0.2,
-                    "y": -0.1,
-                    "xy": 0.15,
-                },
-                "bounds": [[0.0, 1.0], [0.0, 1.0]],
-            },
-            "data": {
-                "train_interior": 512,
-                "train_boundary": 256,
-                "validation_interior": 1024,
-                "validation_boundary": 512,
-                "evaluation_resolution": 51,
-                "dtype": "float32",
-                "seed": 27182,
+                "seed": SEED + 3,
             },
         },
     ],
     "model": {
-        "name": "poisson_grid_search",
+        "name": "poisson_pinn",
         "type": "mlp",
         "input_dim": 2,
         "output_dim": 1,
-        "depth": 3,
-        "width": 48,
+        "depth": 4,
+        "width": 64,
         "activation": "tanh",
         "output_activation": "identity",
         "bias": True,
-        "parameter_init": {"type": "xavier_uniform", "seed": 0},
+        "parameter_init": {"type": "xavier_uniform", "seed": SEED + 2},
     },
     "training": {
         "algorithm": "sgd",
-        "steps": 1600,
-        "batch_size": 64,
+        "steps": 2000,
+        "batch_size": 100,
         # A number means constant LR.  Schedule dictionaries are also accepted;
         # see learning_rate_at() for constant, step, exponential, and cosine.
-        "learning_rate": 1e-3,
+        "learning_rate": 2e-3,
         "optimizer": {
             "name": "sgd",
             "momentum": 0.0,
@@ -158,14 +135,17 @@ DEFAULT_GRID_SEARCH_CONFIG: dict[str, Any] = {
             "nesterov": False,
         },
         "max_grad_norm": None,
+        "seed": SEED + 7,
+        "batch_seed": SEED + 8,
         "device": "auto",
     },
     "loss_weights": {"pde": 1.0, "boundary": 7.5},
     "grid": {
-        "training.learning_rate": [1e-3, 1e-2],
-        "training.batch_size": [64, 32],
-        # Complete optimizer dictionaries keep optimizer-specific options from
-        # leaking into other choices (for example momentum into Adam).
+        "training.batch_size": [50, 100],
+        "training.learning_rate": [1e-3, 2e-3],
+        # Each dictionary is one momentum configuration. Complete optimizer
+        # dictionaries prevent SGD-only fields from leaking into Adam and vice
+        # versa. Adam's betas are its first- and second-moment decay factors.
         "training.optimizer": [
             {
                 "name": "sgd",
@@ -175,18 +155,11 @@ DEFAULT_GRID_SEARCH_CONFIG: dict[str, Any] = {
                 "nesterov": False,
             },
             {
-                "name": "sgd",
-                "momentum": 0.9,
+                "name": "adam",
+                "betas": [0.9, 0.99],
                 "weight_decay": 0.0,
-                "dampening": 0.0,
-                "nesterov": False,
-            },
-            {
-                "name": "sgd",
-                "momentum": 2.0,
-                "weight_decay": 0.0,
-                "dampening": 0.0,
-                "nesterov": False,
+                "eps": 1e-8,
+                "amsgrad": False,
             },
             {
                 "name": "adam",
@@ -195,18 +168,11 @@ DEFAULT_GRID_SEARCH_CONFIG: dict[str, Any] = {
                 "weight_decay": 0.0,
                 "amsgrad": False,
             },
-            {
-                "name": "adagrad",
-                "lr_decay": 0.0,
-                "initial_accumulator_value": 0.0,
-                "eps": 1e-10,
-                "weight_decay": 0.0,
-            },
         ],
     },
     # Repeats share seeds across candidates, so candidate comparisons use the
     # same initialization and minibatch permutations.
-    "repeat_seeds": [1000,2000],
+    "repeat_seeds": [SEED + 7],
     "selection": {
         # Always available: validation_loss, pde_residual_rmse, boundary_rmse.
         # relative_l2_error is available when exact_solution is supplied.
@@ -581,8 +547,9 @@ def train_once(
     """Train one candidate/repeat with deterministic initialization and batches."""
 
     training = candidate["training"]
-    if str(training.get("algorithm", "sgd")).lower() != "sgd":
-        raise ValueError("This script only searches training.algorithm='sgd'")
+    algorithm = str(training.get("algorithm", "sgd")).lower().replace("-", "_")
+    if algorithm not in {"sgd", "s_sam"}:
+        raise ValueError("Grid search supports training.algorithm 'sgd' or 's_sam'")
     steps = int(training["steps"])
     if steps < 1:
         raise ValueError("training.steps must be positive")
@@ -605,35 +572,94 @@ def train_once(
     )
     interior_batches = _PermutationBatches(len(interior), requested_batch, seed + 1)
     boundary_batches = _PermutationBatches(len(boundary), boundary_batch_size, seed + 2)
-    optimizer = build_optimizer(
-        model.parameters(),
-        training.get("optimizer", {}),
-        learning_rate=learning_rate_at(training["learning_rate"], 0, steps),
-    )
+    optimizer = None
+    learning_rate_policy = None
+    sharpness_schedule = None
+    update_rule = None
+    if algorithm == "sgd":
+        optimizer = build_optimizer(
+            model.parameters(),
+            training.get("optimizer", {}),
+            learning_rate=learning_rate_at(training["learning_rate"], 0, steps),
+        )
+    else:
+        resolved_training = copy.deepcopy(dict(training))
+        resolved_training["algorithm"] = "s_sam"
+        # A Poisson loss differentiates with respect to its coordinates even
+        # for the clean diagnostic evaluation inside an S-SAM update.
+        resolved_training["loss_requires_grad"] = True
+        learning_rate_policy = build_learning_rate_policy(
+            resolved_training["learning_rate"],
+            default_dimension=int(candidate["model"].get("input_dim", 2)),
+            default_depth=int(candidate["model"].get("depth", 1)),
+        )
+        sharpness_schedule = build_schedule(
+            resolved_training.get("sharpness_scale", 0.0)
+        )
+        update_rule = build_update_rule(model, resolved_training)
     max_grad_norm = training.get("max_grad_norm")
     max_grad_norm = None if max_grad_norm is None else float(max_grad_norm)
     model.train()
     final = {"training_loss": math.nan, "training_pde_loss": math.nan, "training_boundary_loss": math.nan}
     for step in range(steps):
-        for group in optimizer.param_groups:
-            group["lr"] = learning_rate_at(training["learning_rate"], step, steps)
         interior_batch = interior.index_select(0, interior_batches.next(device))
         boundary_batch = boundary.index_select(0, boundary_batches.next(device))
-        optimizer.zero_grad(set_to_none=True)
-        total, pde_loss, boundary_loss = loss_components(
-            model, interior_batch, boundary_batch, problem, candidate["loss_weights"]
-        )
-        if not torch.isfinite(total).item():
-            raise FloatingPointError(f"Non-finite training loss at step {step}")
-        total.backward()
-        if max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-        optimizer.step()
-        final = {
-            "training_loss": float(total.detach()),
-            "training_pde_loss": float(pde_loss.detach()),
-            "training_boundary_loss": float(boundary_loss.detach()),
-        }
+        if algorithm == "sgd":
+            assert optimizer is not None
+            for group in optimizer.param_groups:
+                group["lr"] = learning_rate_at(
+                    training["learning_rate"], step, steps
+                )
+            optimizer.zero_grad(set_to_none=True)
+            total, pde_loss, boundary_loss = loss_components(
+                model,
+                interior_batch,
+                boundary_batch,
+                problem,
+                candidate["loss_weights"],
+            )
+            if not torch.isfinite(total).item():
+                raise FloatingPointError(f"Non-finite training loss at step {step}")
+            total.backward()
+            if max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            optimizer.step()
+            final = {
+                "training_loss": float(total.detach()),
+                "training_pde_loss": float(pde_loss.detach()),
+                "training_boundary_loss": float(boundary_loss.detach()),
+            }
+        else:
+            assert update_rule is not None
+            assert learning_rate_policy is not None
+            assert sharpness_schedule is not None
+
+            def closure() -> dict[str, torch.Tensor]:
+                total, pde_loss, boundary_loss = loss_components(
+                    model,
+                    interior_batch,
+                    boundary_batch,
+                    problem,
+                    candidate["loss_weights"],
+                )
+                return {
+                    "loss": total,
+                    "pde_loss": pde_loss,
+                    "boundary_loss": boundary_loss,
+                }
+
+            outcome = update_rule.step(
+                closure,
+                float(sharpness_schedule(step)),
+                step_index=step,
+                learning_rate_policy=learning_rate_policy,
+            )
+            components = outcome.regularized_components
+            final = {
+                "training_loss": float(outcome.loss),
+                "training_pde_loss": float(components["pde_loss"]),
+                "training_boundary_loss": float(components["boundary_loss"]),
+            }
     return final
 
 
@@ -860,6 +886,14 @@ def run_grid_search(config: Mapping[str, Any]) -> Path:
     """Run all candidates and write the selected optimizer configuration."""
 
     candidates = expand_grid(config)
+    max_candidates = int(config.get("max_candidates", 36))
+    if max_candidates < 1:
+        raise ValueError("max_candidates must be positive")
+    if len(candidates) > max_candidates:
+        raise ValueError(
+            f"Grid expands to {len(candidates)} candidates; "
+            f"the configured maximum is {max_candidates}"
+        )
     setups = list(config.get("setups", ()))
     seeds = [int(seed) for seed in config.get("repeat_seeds", ())]
     if not setups:
@@ -973,8 +1007,10 @@ def run_grid_search(config: Mapping[str, Any]) -> Path:
         "candidates": summaries,
     }
     _write_json(output_dir / "optimal_optimizer_config.json", optimal)
-    # Preserve the original filename for existing automation and notebooks.
-    _write_json(output_dir / "optimal_sgd_config.json", optimal)
+    algorithm = str(config.get("training", {}).get("algorithm", "sgd"))
+    algorithm = algorithm.lower().replace("-", "_")
+    output_algorithm = "ssam" if algorithm == "s_sam" else algorithm
+    _write_json(output_dir / f"optimal_{output_algorithm}_config.json", optimal)
     _write_json(output_dir / "grid_search_results.json", results)
     _write_csv(output_dir / "trials.csv", summaries)
     print(f"Best candidate: {overall['candidate_id']} (mean score {overall['score_across_setups']:.6g})")

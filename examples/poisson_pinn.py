@@ -1,11 +1,11 @@
-"""Compare SGD and Gaussian S-SAM on a 2D Poisson PINN."""
+"""Compare SGD and Gaussian S-SAM across 2D Poisson PINN configs."""
 
 from __future__ import annotations
 
 import copy
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -35,6 +35,7 @@ from ssam import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SEED = 22_478_666_123
+ConfigSource = Mapping[str, Any] | str | Path
 
 
 def build_config(seed: int = SEED) -> dict[str, Any]:
@@ -49,8 +50,8 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
             "type": "mlp",
             "input_dim": 2,
             "output_dim": 1,
-            "depth": 3,
-            "width": 48,
+            "depth": 4,
+            "width": 64,
             "activation": "tanh",
             "output_activation": "identity",
             "bias": True,
@@ -205,9 +206,146 @@ def build_config(seed: int = SEED) -> dict[str, Any]:
 
 CONFIG = build_config()
 
+# Add as many experiment configurations as needed. A grid-search winner is run
+# only with the algorithm stored in its ``training.algorithm`` field. A full
+# Poisson config may still explicitly use ``pinn.algorithms`` for a matched
+# within-run comparison. Entries may be full Poisson configs, a grid-search
+# ``resolved_config``, a path to an ``optimal_*_config.json`` file, or that
+# file's contents as a raw JSON string.
+CONFIGS: list[ConfigSource] = [
+    "outputs/poisson_sgd_grid_search/optimal_sgd_config.json",
+    "outputs/poisson_ssam_grid_search/optimal_ssam_config.json",
+    # PROJECT_ROOT / "outputs/.../optimal_sgd_config.json",
+    # r'''{"best_overall": {"resolved_config": { ... }}}''',
+]
 
-def main(config: Mapping[str, Any] | None = None) -> Path:
-    configuration = copy.deepcopy(CONFIG if config is None else config)
+
+def _deep_merge(
+    base: Mapping[str, Any],
+    override: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a recursive copy of ``base`` updated by ``override``."""
+
+    result = copy.deepcopy(dict(base))
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _load_config_source(config: ConfigSource) -> Mapping[str, Any]:
+    """Load a mapping, JSON file, or raw JSON object used in ``CONFIGS``."""
+
+    if isinstance(config, Mapping):
+        return config
+    if isinstance(config, Path):
+        path = config
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        text = path.read_text(encoding="utf-8")
+        description = str(path)
+    elif isinstance(config, str):
+        if config.lstrip().startswith("{"):
+            text = config
+            description = "raw JSON config"
+        else:
+            path = Path(config)
+            if not path.is_absolute():
+                path = PROJECT_ROOT / path
+            text = path.read_text(encoding="utf-8")
+            description = str(path)
+    else:
+        raise TypeError(
+            "Poisson configs must be mappings, JSON strings, or JSON paths; "
+            f"got {type(config).__name__}"
+        )
+    loaded = json.loads(text)
+    if not isinstance(loaded, Mapping):
+        raise TypeError(f"{description} must contain a JSON object")
+    return loaded
+
+
+def _resolve_experiment_config(config: ConfigSource) -> dict[str, Any]:
+    """Normalize a Poisson config or pasted grid-search winner.
+
+    Grid-search winners contain only the model, training, and loss-weight
+    sections. They are overlaid on :func:`build_config` so the evaluation and
+    plotting settings remain available here. Unlike a full Poisson config, a
+    winner runs only its own ``training.algorithm``; it must not inherit the
+    base config's matched SGD/S-SAM comparison.
+    """
+
+    source = _load_config_source(config)
+    candidate_id = None
+    if isinstance(source.get("best_overall"), Mapping):
+        source = source["best_overall"]
+    if isinstance(source.get("resolved_config"), Mapping):
+        candidate_id = source.get("candidate_id")
+        source = source["resolved_config"]
+
+    required_sections = {
+        "run",
+        "model",
+        "data",
+        "pinn",
+        "training",
+        "visualization",
+    }
+    if required_sections.issubset(source):
+        return copy.deepcopy(dict(source))
+
+    configuration = build_config()
+    loss_weights = source.get("loss_weights")
+    if isinstance(loss_weights, Mapping):
+        if "pde" in loss_weights:
+            configuration["pinn"]["pde_weight"] = copy.deepcopy(
+                loss_weights["pde"]
+            )
+        if "boundary" in loss_weights:
+            configuration["pinn"]["boundary_weight"] = copy.deepcopy(
+                loss_weights["boundary"]
+            )
+
+    # Grid-search candidates contain complete model and top-level training
+    # values. Replacing each supplied training value prevents optimizer fields
+    # from another optimizer (for example SGD momentum) leaking into Adam.
+    if isinstance(source.get("model"), Mapping):
+        for key, value in source["model"].items():
+            configuration["model"][key] = copy.deepcopy(value)
+    if isinstance(source.get("training"), Mapping):
+        for key, value in source["training"].items():
+            configuration["training"][key] = copy.deepcopy(value)
+
+    for section in ("run", "data", "pinn", "visualization"):
+        override = source.get(section)
+        if isinstance(override, Mapping):
+            configuration[section] = _deep_merge(
+                configuration[section], override
+            )
+
+    source_training = source.get("training")
+    if isinstance(source_training, Mapping) and "algorithm" in source_training:
+        algorithm = str(source_training["algorithm"]).lower().replace("-", "_")
+        if algorithm == "ssam":
+            algorithm = "s_sam"
+        configuration["training"]["algorithm"] = algorithm
+        configuration["pinn"]["algorithms"] = [algorithm]
+
+    if configuration["run"].get("name") is None and isinstance(
+        source_training, Mapping
+    ):
+        algorithm = str(source_training.get("algorithm", "grid-search"))
+        suffix = f"-candidate-{candidate_id}" if candidate_id is not None else ""
+        configuration["run"]["name"] = f"grid-{algorithm}{suffix}"
+    return configuration
+
+
+def main(config: ConfigSource | None = None) -> Path:
+    configuration = _resolve_experiment_config(
+        CONFIG if config is None else config
+    )
     pinn_config = configuration["pinn"]
     evaluation_config = pinn_config["evaluation"]
     forcing_config = evaluation_config["forcing_uncertainty"]
@@ -718,5 +856,30 @@ def main(config: Mapping[str, Any] | None = None) -> Path:
     return output_dir
 
 
+def run_configs(
+    configs: Sequence[ConfigSource] | None = None,
+) -> tuple[Path, ...]:
+    """Run every config with its resolved algorithm selection."""
+
+    selected_configs = CONFIGS if configs is None else configs
+    if not selected_configs:
+        raise ValueError("At least one Poisson experiment config is required")
+
+    output_directories = []
+    for index, config in enumerate(selected_configs, start=1):
+        print(
+            f"\n=== Poisson config {index}/{len(selected_configs)} "
+            "(running resolved algorithm selection) ==="
+        )
+        try:
+            output_directories.append(main(config))
+        finally:
+            # Avoid retaining all Matplotlib figures during larger comparisons.
+            from matplotlib import pyplot as plt
+
+            plt.close("all")
+    return tuple(output_directories)
+
+
 if __name__ == "__main__":
-    main()
+    run_configs()

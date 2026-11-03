@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -85,6 +86,41 @@ def _piecewise(config: Mapping[str, Any]) -> Schedule:
     return schedule
 
 
+def _piecewise_constant(config: Mapping[str, Any]) -> Schedule:
+    """Hold one value on each interval separated by step boundaries.
+
+    ``boundaries=[500, 1000]`` and ``values=[1.0, 0.5, 0.1]`` means that the
+    schedule is 1.0 for steps 0--499, 0.5 for steps 500--999, and 0.1 from
+    step 1000 onward.  This representation makes plateau lengths explicit,
+    which is useful when optimizer moment estimates need time to adapt after a
+    sharpness-objective change.
+    """
+
+    _validate_keys(
+        config,
+        {"name", "boundaries", "values"},
+        "piecewise_constant",
+    )
+    boundaries = [int(value) for value in config.get("boundaries", ())]
+    values = [float(value) for value in config.get("values", ())]
+    if len(values) != len(boundaries) + 1:
+        raise ValueError(
+            "piecewise_constant needs exactly one more value than boundary"
+        )
+    if any(boundary <= 0 for boundary in boundaries):
+        raise ValueError("piecewise_constant boundaries must be positive steps")
+    if any(left >= right for left, right in zip(boundaries, boundaries[1:])):
+        raise ValueError(
+            "piecewise_constant boundaries must be strictly increasing"
+        )
+    if any(not math.isfinite(value) or value < 0.0 for value in values):
+        raise ValueError(
+            "piecewise_constant values must be non-negative and finite"
+        )
+
+    return lambda step: values[bisect_right(boundaries, int(step))]
+
+
 def _validate_keys(
     config: Mapping[str, Any],
     allowed: set[str],
@@ -100,6 +136,7 @@ register_schedule("inverse_time", _inverse_time)
 register_schedule("linear", _linear)
 register_schedule("cosine", _cosine)
 register_schedule("piecewise", _piecewise)
+register_schedule("piecewise_constant", _piecewise_constant)
 
 
 def build_schedule(config: float | int | Mapping[str, Any]) -> Schedule:

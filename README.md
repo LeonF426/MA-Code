@@ -224,9 +224,22 @@ momentum or weight decay. Adam and Adagrad still receive the configured scalar
 learning-rate policy, but they are empirical optimizer variants rather than
 instances of that SGD guarantee.
 
-Both learning rate and sharpness scale accept `constant`, `inverse_time`, `linear`,
-`cosine`, or `piecewise` schedules. For S-SAM, the theorem-inspired adaptive policy
-can use the current Monte Carlo objective estimate:
+Both learning rate and sharpness scale accept `constant`, `inverse_time`,
+`linear`, `cosine`, `piecewise`, or `piecewise_constant` schedules. The explicit
+piecewise-constant form uses transition boundaries and one value per plateau:
+
+```python
+{
+    "name": "piecewise_constant",
+    "boundaries": [500, 1000],
+    "values": [1.0, 0.5, 0.1],
+}
+```
+
+This keeps the objective fixed for controlled stretches, which is particularly
+useful when Adam's moment estimates need time to adapt between S-SAM sharpness
+scales. For S-SAM, the theorem-inspired adaptive policy can use the current
+Monte Carlo objective estimate:
 
 ```python
 "learning_rate": {
@@ -492,21 +505,36 @@ metrics and maximum changes per unit perturbation under
 not retraining runs or calibrated uncertainty distributions.
 
 [`examples/grid_search_poisson_sgd.py`](examples/grid_search_poisson_sgd.py)
-can compare SGD, Adam, and Adagrad on the same initialization seeds, points, and
-minibatch order. Optimizers are grid values at the complete
-`training.optimizer` path, rather than a Cartesian product of incompatible
-optimizer-specific fields. For example:
+uses the same 4-by-64 tanh MLP, collocation counts, and loss weights as the
+Poisson PINN example. The search is intentionally restricted to the nominal
+unit-square sine problem with a zero Dirichlet boundary. Its grid varies only
+batch size, learning rate, and momentum configuration while keeping seeds,
+points, and minibatch order matched between candidates. Momentum configurations
+are complete optimizer dictionaries so incompatible optimizer-specific fields
+cannot leak between SGD and Adam. For example:
 
 ```python
 "training.optimizer": [
     {"name": "sgd", "momentum": 0.0},
+    {"name": "sgd", "momentum": 0.9},
+    {"name": "adam", "betas": [0.9, 0.99]},
     {"name": "adam", "betas": [0.9, 0.999]},
-    {"name": "adagrad", "lr_decay": 0.0},
 ]
 ```
 
 The selected result is written to `optimal_optimizer_config.json`; the former
 `optimal_sgd_config.json` filename is also written for compatibility.
+
+[`examples/grid_search_poisson_ssam.py`](examples/grid_search_poisson_ssam.py)
+reuses that exact zero-boundary model, data, loss, batch-size, learning-rate,
+and optimizer-momentum grid for S-SAM. It adds constant, inverse-time, and
+piecewise-constant eta candidates. The two-stage plateau holds each eta for
+1,000 updates so Adam can adapt its moment state before the smoothed objective
+changes again. The SGD grid contains 12 candidates and the S-SAM grid contains
+36; `max_candidates=36` prevents an accidentally larger Cartesian product.
+Both searches currently use one repeat seed, so candidate and trial counts are
+identical. The selected S-SAM result is also written to
+`optimal_ssam_config.json`.
 
 The console labels the nominal equation as `ORIGINAL RHS`, and
 `forcing_sensitivity.png` compares SGD/S-SAM boundary-condition mismatch,

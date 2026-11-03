@@ -9,6 +9,55 @@ def test_piecewise_schedule():
     assert schedule(3) == 0.1
 
 
+def test_piecewise_constant_schedule_has_explicit_plateaus():
+    schedule = build_schedule(
+        {
+            "name": "piecewise_constant",
+            "boundaries": [3, 7],
+            "values": [1.0, 0.25, 0.05],
+        }
+    )
+
+    assert [schedule(step) for step in (0, 2, 3, 6, 7, 100)] == [
+        1.0,
+        1.0,
+        0.25,
+        0.25,
+        0.05,
+        0.05,
+    ]
+
+
+@pytest.mark.parametrize(
+    "config, message",
+    [
+        (
+            {"name": "piecewise_constant", "boundaries": [3], "values": [1.0]},
+            "one more value",
+        ),
+        (
+            {
+                "name": "piecewise_constant",
+                "boundaries": [3, 3],
+                "values": [1.0, 0.5, 0.1],
+            },
+            "strictly increasing",
+        ),
+        (
+            {
+                "name": "piecewise_constant",
+                "boundaries": [3],
+                "values": [1.0, -0.1],
+            },
+            "non-negative and finite",
+        ),
+    ],
+)
+def test_piecewise_constant_schedule_validates_plateaus(config, message):
+    with pytest.raises(ValueError, match=message):
+        build_schedule(config)
+
+
 def test_unknown_schedule():
     with pytest.raises(ValueError, match="Unknown schedule"):
         build_schedule({"name": "unknown"})

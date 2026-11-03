@@ -1,14 +1,58 @@
+import copy
 import json
 
+import pytest
 import torch
 
 from examples.grid_search_poisson_sgd import (
     DEFAULT_GRID_SEARCH_CONFIG,
+    SEED,
     expand_grid,
     manufactured_sine_problem,
     poisson_residual,
     run_grid_search,
 )
+
+
+def test_default_search_matches_poisson_pinn_model_and_uses_only_zero_boundary():
+    config = DEFAULT_GRID_SEARCH_CONFIG
+
+    assert config["model"] == {
+        "name": "poisson_pinn",
+        "type": "mlp",
+        "input_dim": 2,
+        "output_dim": 1,
+        "depth": 4,
+        "width": 64,
+        "activation": "tanh",
+        "output_activation": "identity",
+        "bias": True,
+        "parameter_init": {"type": "xavier_uniform", "seed": SEED + 2},
+    }
+    assert len(config["setups"]) == 1
+    assert config["setups"][0]["problem"]["boundary_condition"] == {
+        "name": "zero"
+    }
+    assert set(config["grid"]) == {
+        "training.batch_size",
+        "training.learning_rate",
+        "training.optimizer",
+    }
+    assert {
+        optimizer["name"] for optimizer in config["grid"]["training.optimizer"]
+    } == {"sgd", "adam"}
+    assert len(expand_grid(config)) == 12
+    assert len(expand_grid(config)) <= config["max_candidates"]
+    assert config["repeat_seeds"] == [SEED + 7]
+
+
+def test_grid_search_rejects_more_than_configured_candidate_limit(tmp_path):
+    config = copy.deepcopy(DEFAULT_GRID_SEARCH_CONFIG)
+    config["output_dir"] = str(tmp_path)
+    config["max_candidates"] = 1
+
+    with pytest.raises(ValueError, match="Grid expands to 12 candidates"):
+        run_grid_search(config)
 
 
 def test_manufactured_solution_satisfies_configured_rhs_and_boundary():
