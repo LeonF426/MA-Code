@@ -1,0 +1,168 @@
+{
+  "created_at": "2026-10-30T18:21:20.890116+00:00",
+  "selection": {
+    "metric": "validation_loss",
+    "pde_weight": 1.0,
+    "boundary_weight": 1.0
+  },
+  "best_overall": {
+    "candidate_id": 13,
+    "score": 0.11923896253075576,
+    "hyperparameters": {
+      "training.batch_size": 50,
+      "training.learning_rate": 0.002,
+      "training.optimizer": {
+        "name": "adam",
+        "betas": [
+          0.9,
+          0.99
+        ],
+        "weight_decay": 0.0,
+        "eps": 1e-08,
+        "amsgrad": false
+      },
+      "training.sharpness_scale": {
+        "name": "inverse_time",
+        "initial": 1.0,
+        "power": 0.5,
+        "floor": 0.0
+      }
+    },
+    "resolved_config": {
+      "model": {
+        "name": "poisson_pinn",
+        "type": "mlp",
+        "input_dim": 2,
+        "output_dim": 1,
+        "depth": 4,
+        "width": 64,
+        "activation": "tanh",
+        "output_activation": "identity",
+        "bias": true,
+        "parameter_init": {
+          "type": "xavier_uniform",
+          "seed": 22478666125
+        }
+      },
+      "training": {
+        "algorithm": "s_sam",
+        "steps": 2000,
+        "batch_size": 50,
+        "learning_rate": 0.002,
+        "optimizer": {
+          "name": "adam",
+          "betas": [
+            0.9,
+            0.99
+          ],
+          "weight_decay": 0.0,
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "max_grad_norm": null,
+        "seed": 22478666130,
+        "batch_seed": 22478666131,
+        "device": "auto",
+        "sharpness_scale": {
+          "name": "inverse_time",
+          "initial": 1.0,
+          "power": 0.5,
+          "floor": 0.0
+        },
+        "perturbation": {
+          "distribution": "gaussian",
+          "samples": 20,
+          "normalized": false,
+          "antithetic": true,
+          "preserve_buffers": true,
+          "seed": 22478666129
+        }
+      },
+      "loss_weights": {
+        "pde": 1.0,
+        "boundary": 7.5
+      }
+    }
+  },
+  "best_per_setup": {
+    "poisson_pinn_zero_boundary": {
+      "candidate_id": 13,
+      "score": 0.11923896253075576,
+      "hyperparameters": {
+        "training.batch_size": 50,
+        "training.learning_rate": 0.002,
+        "training.optimizer": {
+          "name": "adam",
+          "betas": [
+            0.9,
+            0.99
+          ],
+          "weight_decay": 0.0,
+          "eps": 1e-08,
+          "amsgrad": false
+        },
+        "training.sharpness_scale": {
+          "name": "inverse_time",
+          "initial": 1.0,
+          "power": 0.5,
+          "floor": 0.0
+        }
+      },
+      "resolved_config": {
+        "model": {
+          "name": "poisson_pinn",
+          "type": "mlp",
+          "input_dim": 2,
+          "output_dim": 1,
+          "depth": 4,
+          "width": 64,
+          "activation": "tanh",
+          "output_activation": "identity",
+          "bias": true,
+          "parameter_init": {
+            "type": "xavier_uniform",
+            "seed": 22478666125
+          }
+        },
+        "training": {
+          "algorithm": "s_sam",
+          "steps": 2000,
+          "batch_size": 50,
+          "learning_rate": 0.002,
+          "optimizer": {
+            "name": "adam",
+            "betas": [
+              0.9,
+              0.99
+            ],
+            "weight_decay": 0.0,
+            "eps": 1e-08,
+            "amsgrad": false
+          },
+          "max_grad_norm": null,
+          "seed": 22478666130,
+          "batch_seed": 22478666131,
+          "device": "auto",
+          "sharpness_scale": {
+            "name": "inverse_time",
+            "initial": 1.0,
+            "power": 0.5,
+            "floor": 0.0
+          },
+          "perturbation": {
+            "distribution": "gaussian",
+            "samples": 20,
+            "normalized": false,
+            "antithetic": true,
+            "preserve_buffers": true,
+            "seed": 22478666129
+          }
+        },
+        "loss_weights": {
+          "pde": 1.0,
+          "boundary": 7.5
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "created_at": "2026-10-30T16:04:13.552932+00:00",
+  "selection": {
+    "metric": "validation_loss",
+    "pde_weight": 1.0,
+    "boundary_weight": 1.0
+  },
+  "best_overall": {
+    "candidate_id": 11,
+    "score": 0.004990495315254917,
+    "hyperparameters": {
+      "training.batch_size": 100,
+      "training.learning_rate": 0.002,
+      "training.optimizer": {
+        "name": "adam",
+        "betas": [
+          0.9,
+          0.999
+        ],
+        "eps": 1e-08,
+        "weight_decay": 0.0,
+        "amsgrad": false
+      }
+    },
+    "resolved_config": {
+      "model": {
+        "name": "poisson_pinn",
+        "type": "mlp",
+        "input_dim": 2,
+        "output_dim": 1,
+        "depth": 4,
+        "width": 64,
+        "activation": "tanh",
+        "output_activation": "identity",
+        "bias": true,
+        "parameter_init": {
+          "type": "xavier_uniform",
+          "seed": 22478666125
+        }
+      },
+      "training": {
+        "algorithm": "sgd",
+        "steps": 2000,
+        "batch_size": 100,
+        "learning_rate": 0.002,
+        "optimizer": {
+          "name": "adam",
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "weight_decay": 0.0,
+          "amsgrad": false
+        },
+        "max_grad_norm": null,
+        "seed": 22478666130,
+        "batch_seed": 22478666131,
+        "device": "auto"
+      },
+      "loss_weights": {
+        "pde": 1.0,
+        "boundary": 7.5
+      }
+    }
+  },
+  "best_per_setup": {
+    "poisson_pinn_zero_boundary": {
+      "candidate_id": 11,
+      "score": 0.004990495315254917,
+      "hyperparameters": {
+        "training.batch_size": 100,
+        "training.learning_rate": 0.002,
+        "training.optimizer": {
+          "name": "adam",
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "weight_decay": 0.0,
+          "amsgrad": false
+        }
+      },
+      "resolved_config": {
+        "model": {
+          "name": "poisson_pinn",
+          "type": "mlp",
+          "input_dim": 2,
+          "output_dim": 1,
+          "depth": 4,
+          "width": 64,
+          "activation": "tanh",
+          "output_activation": "identity",
+          "bias": true,
+          "parameter_init": {
+            "type": "xavier_uniform",
+            "seed": 22478666125
+          }
+        },
+        "training": {
+          "algorithm": "sgd",
+          "steps": 2000,
+          "batch_size": 100,
+          "learning_rate": 0.002,
+          "optimizer": {
+            "name": "adam",
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "eps": 1e-08,
+            "weight_decay": 0.0,
+            "amsgrad": false
+          },
+          "max_grad_norm": null,
+          "seed": 22478666130,
+          "batch_seed": 22478666131,
+          "device": "auto"
+        },
+        "loss_weights": {
+          "pde": 1.0,
+          "boundary": 7.5
+        }
+      }
+    }
+  }
+}
