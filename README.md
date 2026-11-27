@@ -6,7 +6,10 @@ points are unchanged.
 
 ## Projected S-SAM examples
 
-Run from the repository root (with the dependencies in `pyproject.toml`):
+Edit the `CONFIG` dictionary near the top of `projected_examples.py` to choose
+examples, radii to paint, step count, batch sizes, schedules, radius, seed,
+and output directory. Run `projected_examples.py` directly in PyCharm, or
+run from the repository root (with the dependencies in `pyproject.toml`):
 
 ```bash
 python projected_examples.py
@@ -15,14 +18,15 @@ python projected_examples.py --example legacy --paint R_min R_max projection
 python -m unittest -v test_projected_examples
 ```
 
-`--paint` selects which centered balls are **drawn**; all numerical values
+Command-line options override `CONFIG`. `paint=["R_min"]` draws only that
+circle. `paint=[]` draws none. All numerical values
 are calculated and written to `plots/projected_examples/<example>.json` in
 every run. The trajectory figure is saved alongside the JSON as a PNG. An
 empty `--paint` draws no balls. The Python API likewise accepts, for example,
 `run_example(examples()["simple"], Path("plots/projected_examples"),
 paint=["R_min"])`.
 
-The four examples are:
+The four examples currently available are:
 
 | Name | Layers and coordinates | Exact distribution |
 | --- | --- | --- |
@@ -31,12 +35,28 @@ The four examples are:
 | `general_l2` | `L=2, d=1` | Four equally likely atoms `(X,Y)=(-2,-1),(-1,0),(1,1),(2,1)`; no exact linear teacher |
 | `general_l3` | `L=3, d=2` | Six equally likely atoms specified in `examples()`; correlated input coordinates and no exact linear teacher |
 
+Each run creates one `<example>.png` and one `<example>.json` in the configured
+output directory. For the three scalar examples, the PNG contains a contour
+plot of the exact population loss at the final perturbation scale, the complete
+projected stochastic iterate path (with marked start, end, and intermediate
+points), and the selected circles centered at zero. The `projection` circle
+has radius `r`. The green contour indicates the least-squares product.
+
+For `general_l3`, the left PNG panel instead shows a population-loss *slice*
+through the initial parameters in the `(w_1,1, w_2,1)` plane, the projected
+iterate path in those two coordinates, an inset zoom of that path, and the
+selected circles (projections of the full balls). The right panel shows the
+full six-dimensional iterate norm against the selected radii. The JSON
+records the exact distribution atoms and probabilities, `Sigma_X`, `E[XY]`,
+the eigenvalue and radius bounds, configuration, and the final result.
+
 The implementation uses the nested estimator from the predraft: it draws
 `N=32` independent data samples and `b=8` independent Gaussian parameter
 perturbations **per data sample** by default. Each step applies
 `theta[k+1] = project_ball(theta[k] - alpha[k] * g[k], r)`, with
-`alpha[k]=0.08/(k+1)^0.65` and `eta[k]=0.7/(k+1)^0.1`. These are adjustable
-through command-line flags; the default is 1200 steps and a fixed random seed.
+`alpha[k]=0.08/(k+1)^0.65` and `eta[k]=0.7/(k+1)^0.1`. The initial values can
+also be overridden through command-line flags; the decay exponents are in
+`CONFIG`. The default is 1200 steps and a fixed random seed.
 The default projection radius is `r = R_max + 0.5`. The JSON records whether
 projection was active on any step and the largest full parameter norm.
 

@@ -17,6 +17,24 @@ from matplotlib.patches import Circle
 import numpy as np
 
 
+# Edit this block to run experiments directly from PyCharm.
+# Command-line options, when supplied, override the corresponding values.
+CONFIG = {
+    "example": "all",  # simple, legacy, general_l2, general_l3, or all
+    "paint": ["R_min", "R_max", "projection"],
+    "steps": 1200,
+    "outer_batch": 32,
+    "inner_batch": 8,
+    "eta0": 0.7,
+    "alpha0": 0.08,
+    "eta_decay": 0.1,
+    "alpha_decay": 0.65,
+    "radius": None,  # None means R_max + 0.5 for each example
+    "seed": 42,
+    "output_dir": Path("plots/projected_examples"),
+}
+
+
 @dataclass(frozen=True)
 class DiscreteDistribution:
     name: str
@@ -167,8 +185,8 @@ def projected_iteration(example: Example, numbers: dict, *, steps: int, outer_ba
     path[0] = example.initial
     projected_steps = 0
     for k in range(steps):
-        eta_k = eta0 / (k + 1) ** 0.1
-        alpha_k = alpha0 / (k + 1) ** 0.65
+        eta_k = eta0 / (k + 1) ** CONFIG["eta_decay"]
+        alpha_k = alpha0 / (k + 1) ** CONFIG["alpha_decay"]
         g_k = nested_gradient(path[k], eta_k, example.distribution,
                               outer_batch, inner_batch, rng)
         candidate = path[k] - alpha_k * g_k
@@ -268,7 +286,7 @@ def run_example(example: Example, output_dir: Path, *, paint: tuple[str, ...] | 
         eta0=eta0, alpha0=alpha0, radius=radius, seed=seed)
     name = example.distribution.name
     plot_example(example, path, numbers, radius, paint, output_dir / f"{name}.png",
-                 eta=eta0 / (steps + 1) ** 0.1)
+                 eta=eta0 / (steps + 1) ** CONFIG["eta_decay"])
     report = {
         "example": name,
         "distribution": {"X_atoms": example.distribution.x.tolist(),
@@ -288,17 +306,17 @@ def run_example(example: Example, output_dir: Path, *, paint: tuple[str, ...] | 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--example", choices=["all", *examples()], default="all")
-    parser.add_argument("--paint", nargs="*", choices=RADII, default=list(RADII),
+    parser.add_argument("--example", choices=["all", *examples()], default=CONFIG["example"])
+    parser.add_argument("--paint", nargs="*", choices=RADII, default=CONFIG["paint"],
                         help="Radii to draw; all values are computed regardless of this selection.")
-    parser.add_argument("--steps", type=int, default=1200)
-    parser.add_argument("--outer-batch", type=int, default=32)
-    parser.add_argument("--inner-batch", type=int, default=8)
-    parser.add_argument("--eta0", type=float, default=0.7)
-    parser.add_argument("--alpha0", type=float, default=0.08)
-    parser.add_argument("--radius", type=float, default=None)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output-dir", type=Path, default=Path("plots/projected_examples"))
+    parser.add_argument("--steps", type=int, default=CONFIG["steps"])
+    parser.add_argument("--outer-batch", type=int, default=CONFIG["outer_batch"])
+    parser.add_argument("--inner-batch", type=int, default=CONFIG["inner_batch"])
+    parser.add_argument("--eta0", type=float, default=CONFIG["eta0"])
+    parser.add_argument("--alpha0", type=float, default=CONFIG["alpha0"])
+    parser.add_argument("--radius", type=float, default=CONFIG["radius"])
+    parser.add_argument("--seed", type=int, default=CONFIG["seed"])
+    parser.add_argument("--output-dir", type=Path, default=CONFIG["output_dir"])
     args = parser.parse_args()
     selected = examples()
     if args.example != "all":
